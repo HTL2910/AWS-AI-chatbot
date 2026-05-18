@@ -115,7 +115,7 @@ with st.sidebar:
     model_id = "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
     region = "ap-southeast-1"
     
-    st.info(f"🤖 Model: Claude Haiku 4.5\n📍 Region: ap-southeast-1")
+    st.info(f"🤖 Model: Claude Haiku 4.5 (via Inference Profile)\n📍 Region: ap-southeast-1")
     
     # Configure button
     if st.button("🔧 Cấu hình Kết nối", use_container_width=True):
@@ -261,7 +261,24 @@ else:
                 
                 if response.status_code == 200:
                     result = response.json()
-                    assistant_message = result['content'][0]['text']
+                    
+                    # Handle both response formats
+                    if 'content' in result:
+                        # Standard Anthropic format
+                        assistant_message = result['content'][0]['text']
+                    elif 'Output' in result and isinstance(result['Output'], dict):
+                        # Inference profile format - try to extract text
+                        output = result['Output']
+                        if '__type' in output and 'UnknownOperationException' in output['__type']:
+                            # This is an error response
+                            error_message = f"❌ Lỗi API: {output}"
+                            st.error(error_message)
+                            st.session_state.messages.pop()  # Remove user message
+                            st.rerun()
+                            return
+                        assistant_message = str(output)
+                    else:
+                        assistant_message = str(result)
                     
                     # Add assistant message to history
                     st.session_state.messages.append({
@@ -282,6 +299,7 @@ else:
                 else:
                     error_message = f"❌ Lỗi {response.status_code}: {response.text}"
                     st.error(error_message)
+                    st.session_state.messages.pop()  # Remove user message
                 
         except Exception as e:
             error_message = f"❌ Lỗi kết nối: {str(e)}"
