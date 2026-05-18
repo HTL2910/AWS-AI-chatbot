@@ -32,15 +32,12 @@ export function getChatWebviewHtml(webview: vscode.Webview, extensionUri: vscode
     <div class="root">
       <div class="topbar">
         <div class="title">Safegraph AI</div>
-        <div class="actions">
-          <button id="stop" class="setkey" type="button" title="Stop generating">Stop</button>
-          <button id="dockRight" class="setkey" type="button" title="Move to right sidebar">Dock Right</button>
-          <button id="setKey" class="setkey" type="button" title="Set Bedrock API Key">Set Key</button>
-        </div>
       </div>
       <div id="messages" class="messages" aria-label="Chat messages"></div>
       <form id="composer" class="composer">
         <div id="mention" class="mention" hidden></div>
+        <button id="attachFile" class="attachBtn" type="button" title="Attach files">📎</button>
+        <input id="fileInput" type="file" multiple hidden />
         <input id="input" class="input" type="text" placeholder="Type a message..." />
         <button id="send" class="send" type="submit">Send</button>
       </form>

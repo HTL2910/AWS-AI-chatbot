@@ -4,15 +4,27 @@
   const messagesEl = document.getElementById("messages");
   const formEl = document.getElementById("composer");
   const inputEl = document.getElementById("input");
-  const setKeyEl = document.getElementById("setKey");
   const sendEl = document.getElementById("send");
-  const dockRightEl = document.getElementById("dockRight");
-  const stopEl = document.getElementById("stop");
+  const attachFileEl = document.getElementById("attachFile");
+  const fileInputEl = document.getElementById("fileInput");
   const mentionEl = document.getElementById("mention");
 
   const assistantById = new Map();
-  const assistantState = new Map(); // id -> { text, done }
+  const assistantState = new Map(); // id -> { text, done, stopped }
   const taggedFiles = new Map(); // path -> label
+  const attachments = new Map(); // id -> { id, name, text, size, mime }
+  let currentMessageId = null; // track current streaming message
+  const taggedFilesEl = document.createElement("div");
+  taggedFilesEl.className = "taggedFilesList";
+  taggedFilesEl.hidden = true;
+  formEl.parentElement.insertBefore(taggedFilesEl, formEl);
+
+  const attachmentsEl = document.createElement("div");
+  attachmentsEl.className = "taggedFilesList";
+  attachmentsEl.hidden = true;
+  formEl.parentElement.insertBefore(attachmentsEl, taggedFilesEl);
+
+  const rootEl = document.querySelector(".root");
 
   function appendMessage(role, text) {
     const row = document.createElement("div");
@@ -192,22 +204,44 @@
     if (!el) {
       el = appendMessage("assistant", "");
       assistantById.set(id, el);
+      currentMessageId = id;
+      sendEl.textContent = "Stop";
     }
     assistantState.set(id, { text, done: !!done });
 
-    // During streaming (done=false), render plain text only to avoid resetting interactive UI repeatedly.
+    // During streaming (done=false), render partial text with loader animation.
     if (!done) {
-      el.textContent = text;
+      el.classList.add("loading");
+      let content = el.querySelector(".assistantContent");
+      if (!content) {
+        el.innerHTML = "";
+        content = document.createElement("div");
+        content.className = "assistantContent";
+        el.appendChild(content);
+
+        const loader = document.createElement("div");
+        loader.className = "loadingDots";
+        loader.innerHTML = "<span></span><span></span><span></span>";
+        el.appendChild(loader);
+      }
+      content.textContent = String(text || "Thinking...");
       messagesEl.scrollTop = messagesEl.scrollHeight;
       return;
     }
 
     // Replace contents on final.
+    el.classList.remove("loading");
     el.innerHTML = "";
     const tmp = document.createElement("div");
     tmp.className = "plain";
     tmp.textContent = String(text || "");
     el.appendChild(tmp);
+
+    // Reset button and currentMessageId on done
+    if (currentMessageId === id) {
+      currentMessageId = null;
+      sendEl.textContent = "Send";
+    }
 
     // Diff previews (per-file) only on done=true.
     if (typeof text === "string" && text.includes("```diff")) {
@@ -221,6 +255,38 @@
         el.appendChild(container);
       }
     }
+
+    // Add Continue button if message was stopped
+    const state = assistantState.get(id);
+    if (state && state.stopped && text && typeof text === "string") {
+      const actionBar = document.createElement("div");
+      actionBar.className = "messageActions";
+
+      const continueBtn = document.createElement("button");
+      continueBtn.type = "button";
+      continueBtn.className = "applyBtn";
+      continueBtn.textContent = "Continue";
+      continueBtn.addEventListener("click", () => {
+        continueBtn.disabled = true;
+        continueBtn.textContent = "Continuing...";
+        const promptText =
+          "Continue from where you left off. Do not repeat earlier text.\n\n" +
+          "Previous output:\n" +
+          String(text);
+        vscode.postMessage({
+          type: "userMessage",
+          id: String(Date.now()),
+          text: promptText,
+          ts: Date.now(),
+          taggedFiles: Array.from(taggedFiles.keys()),
+          attachments: Array.from(attachments.values()).map((a) => ({ name: a.name, text: a.text }))
+        });
+      });
+
+      actionBar.appendChild(continueBtn);
+      el.appendChild(actionBar);
+    }
+
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -235,17 +301,116 @@
     if (msg.type === "commandUpdate") updateCommand(msg);
   });
 
-  setKeyEl.addEventListener("click", () => {
-    vscode.postMessage({ type: "setApiKey" });
+  attachFileEl.addEventListener("click", (e) => {
+    e.preventDefault();
+    // Cursor-like: attach local files (upload) instead of picking workspace paths.
+    if (fileInputEl) fileInputEl.click();
   });
 
-  dockRightEl.addEventListener("click", () => {
-    vscode.postMessage({ type: "moveRight" });
-  });
+  const MAX_FILE_BYTES = 200 * 1024; // 200KB per file
+  const MAX_TOTAL_BYTES = 800 * 1024; // 800KB total
 
-  stopEl.addEventListener("click", () => {
-    vscode.postMessage({ type: "stop" });
-  });
+  function currentAttachmentBytes() {
+    let sum = 0;
+    for (const a of attachments.values()) sum += a.size || 0;
+    return sum;
+  }
+
+  function renderAttachments() {
+    attachmentsEl.innerHTML = "";
+    if (attachments.size === 0) {
+      attachmentsEl.hidden = true;
+      return;
+    }
+    attachmentsEl.hidden = false;
+
+    const title = document.createElement("div");
+    title.className = "taggedFilesTitle";
+    title.textContent = `Attachments (${attachments.size})`;
+    attachmentsEl.appendChild(title);
+
+    const list = document.createElement("div");
+    list.className = "taggedFilesList";
+
+    for (const [id, a] of attachments) {
+      const item = document.createElement("div");
+      item.className = "taggedFileItem";
+
+      const nameEl = document.createElement("div");
+      nameEl.className = "taggedFileName";
+      nameEl.textContent = a.name || "file";
+      nameEl.title = `${a.name} (${Math.round((a.size || 0) / 1024)} KB)`;
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "taggedFileRemove";
+      removeBtn.textContent = "×";
+      removeBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        attachments.delete(id);
+        renderAttachments();
+      });
+
+      item.appendChild(nameEl);
+      item.appendChild(removeBtn);
+      list.appendChild(item);
+    }
+
+    attachmentsEl.appendChild(list);
+  }
+
+  async function readFileAsText(file) {
+    return await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onerror = () => reject(new Error("read failed"));
+      r.onload = () => resolve(String(r.result || ""));
+      r.readAsText(file);
+    });
+  }
+
+  async function attachFilesFromList(fileList) {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+
+    const acceptedTextPattern = /\.(txt|md|json|js|ts|tsx|jsx|css|html|yaml|yml|py|java|c|cpp|cs|rs|go|sh|ps1|cmd)$/i;
+
+    for (const file of files) {
+      if (!file) continue;
+      if ((file.size || 0) > MAX_FILE_BYTES) {
+        appendMessage("error", `Attachment too large: ${file.name} (max ${Math.round(MAX_FILE_BYTES / 1024)}KB)`);
+        continue;
+      }
+      if (currentAttachmentBytes() + (file.size || 0) > MAX_TOTAL_BYTES) {
+        appendMessage("error", `Attachments total too large (max ${Math.round(MAX_TOTAL_BYTES / 1024)}KB)`);
+        break;
+      }
+
+      const mime = String(file.type || "");
+      const name = String(file.name || "file");
+      let text = `[binary file: ${name}, ${Math.round((file.size || 0) / 1024)}KB]`;
+      if (mime.startsWith("text/") || acceptedTextPattern.test(name)) {
+        try {
+          text = await readFileAsText(file);
+        } catch {
+          text = `[file could not be read as text: ${name}]`;
+        }
+      }
+
+      const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      attachments.set(id, { id, name, text, size: file.size || 0, mime });
+    }
+
+    renderAttachments();
+  }
+
+  if (fileInputEl) {
+    fileInputEl.addEventListener("change", async (e) => {
+      const input = e.target;
+      await attachFilesFromList(input.files);
+      // allow selecting the same file again
+      input.value = "";
+    });
+  }
 
   function renderSuggestions(items) {
     if (!Array.isArray(items) || items.length === 0) {
@@ -314,8 +479,214 @@
     }
   });
 
+  function renderTaggedFiles() {
+    taggedFilesEl.innerHTML = "";
+    if (taggedFiles.size === 0) {
+      taggedFilesEl.hidden = true;
+      return;
+    }
+    taggedFilesEl.hidden = false;
+    const title = document.createElement("div");
+    title.className = "taggedFilesTitle";
+    title.textContent = `Tagged Files (${taggedFiles.size})`;
+    taggedFilesEl.appendChild(title);
+
+    const list = document.createElement("div");
+    list.className = "taggedFilesList";
+    for (const [path, label] of taggedFiles) {
+      const item = document.createElement("div");
+      item.className = "taggedFileItem";
+      
+      const nameEl = document.createElement("div");
+      nameEl.className = "taggedFileName";
+      nameEl.textContent = label || path.split(/[\\/]/).pop();
+      nameEl.title = path;
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "taggedFileRemove";
+      removeBtn.textContent = "×";
+      removeBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        taggedFiles.delete(path);
+        renderTaggedFiles();
+      });
+
+      item.appendChild(nameEl);
+      item.appendChild(removeBtn);
+      list.appendChild(item);
+    }
+    taggedFilesEl.appendChild(list);
+  }
+
+  // Drag-drop support for files
+  const dragOverlay = document.createElement("div");
+  dragOverlay.className = "dragOverlay";
+  dragOverlay.hidden = true;
+  dragOverlay.textContent = "Drop files to attach and reference...";
+  dragOverlay.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  // Overlay should cover the entire Safegraph panel (like Cursor), not just the messages list.
+  (rootEl || messagesEl.parentElement).appendChild(dragOverlay);
+
+  // Only show overlay while the user is actively dragging FILES into the webview.
+  // Some environments can emit stray dragenter events which would otherwise leave
+  // the overlay visible until a reload.
+  let fileDragDepth = 0;
+  let hideOverlayTimer = null;
+
+  function isFileDrag(e) {
+    const dt = e && e.dataTransfer;
+    if (!dt || !dt.types) return false;
+    try {
+      return Array.from(dt.types).includes("Files");
+    } catch {
+      return false;
+    }
+  }
+
+  function updateOverlayTextFromEvent(e) {
+    const dt = e && e.dataTransfer;
+    if (!dt || !dt.items) return;
+    const names = [];
+    for (let i = 0; i < dt.items.length; i += 1) {
+      const item = dt.items[i];
+      if (item && item.kind === "file") {
+        names.push(item.getAsFile()?.name || "file");
+      }
+    }
+    if (names.length > 0) {
+      dragOverlay.textContent = `Drop to attach: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` +${names.length - 3} more` : ""}`;
+    } else {
+      dragOverlay.textContent = "Drop files to attach and reference...";
+    }
+  }
+
+  function showOverlay(e) {
+    if (hideOverlayTimer) {
+      clearTimeout(hideOverlayTimer);
+      hideOverlayTimer = null;
+    }
+    if (e) updateOverlayTextFromEvent(e);
+    dragOverlay.hidden = false;
+  }
+
+  function scheduleHideOverlay(delayMs) {
+    if (hideOverlayTimer) clearTimeout(hideOverlayTimer);
+    hideOverlayTimer = setTimeout(() => {
+      fileDragDepth = 0;
+      dragOverlay.hidden = true;
+      hideOverlayTimer = null;
+    }, delayMs);
+  }
+
+  function handleDragEnter(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isFileDrag(e)) return;
+    fileDragDepth++;
+    showOverlay(e);
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isFileDrag(e)) return;
+    try {
+      e.dataTransfer.dropEffect = "copy";
+    } catch {}
+    showOverlay(e);
+  }
+
+  function handleDragLeave(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (fileDragDepth > 0) fileDragDepth--;
+    if (fileDragDepth <= 0) scheduleHideOverlay(60);
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    fileDragDepth = 0;
+    dragOverlay.hidden = true;
+    if (hideOverlayTimer) {
+      clearTimeout(hideOverlayTimer);
+      hideOverlayTimer = null;
+    }
+
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) {
+      // Debug signal in UI (better than silent no-op)
+      appendMessage("error", "Drop received but no files were attached (blocked by host or non-file drag).");
+      return;
+    }
+
+    // Drag/drop = local upload (attachments), not workspace tagging.
+    attachFilesFromList(files);
+  }
+
+  // Keep local listeners (they help with consistent leave depth), but global listeners below
+  // ensure drops work anywhere in the panel.
+  (rootEl || messagesEl.parentElement).addEventListener("dragenter", handleDragEnter);
+  (rootEl || messagesEl.parentElement).addEventListener("dragover", handleDragOver);
+  (rootEl || messagesEl.parentElement).addEventListener("dragleave", handleDragLeave);
+  (rootEl || messagesEl.parentElement).addEventListener("drop", handleDrop);
+
+  // Safety: hide overlay if the drag operation ends outside the webview.
+  window.addEventListener("dragend", () => scheduleHideOverlay(0));
+  window.addEventListener("drop", () => scheduleHideOverlay(0));
+  window.addEventListener("dragleave", (e) => {
+    // If the cursor leaves the window entirely, hide quickly.
+    if (e && e.relatedTarget == null) scheduleHideOverlay(0);
+  });
+
+  // In VS Code webviews, drop can be blocked unless we preventDefault at the window/document level.
+  // Use capture to ensure we win against any nested handlers.
+  function globalDragOver(e) {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    try {
+      e.dataTransfer.dropEffect = "copy";
+    } catch {}
+    showOverlay();
+  }
+
+  function globalDrop(e) {
+    if (!e || !e.dataTransfer) return;
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    handleDrop(e);
+  }
+
+  function globalDragEnter(e) {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    try {
+      e.dataTransfer.dropEffect = "copy";
+    } catch {}
+    showOverlay();
+  }
+
+  window.addEventListener("dragover", globalDragOver, true);
+  window.addEventListener("drop", globalDrop, true);
+  window.addEventListener("dragenter", globalDragEnter, true);
+  document.addEventListener("dragover", globalDragOver, true);
+  document.addEventListener("drop", globalDrop, true);
+  document.addEventListener("dragenter", globalDragEnter, true);
+
   formEl.addEventListener("submit", (e) => {
     e.preventDefault();
+    
+    // If currently streaming, stop the message instead of sending a new one
+    if (currentMessageId) {
+      vscode.postMessage({ type: "stop" });
+      return;
+    }
+    
     const text = String(inputEl.value || "").trim();
     if (!text) return;
     const id = String(Date.now());
@@ -327,7 +698,8 @@
       id,
       text,
       ts: Date.now(),
-      taggedFiles: Array.from(taggedFiles.keys())
+      taggedFiles: Array.from(taggedFiles.keys()),
+      attachments: Array.from(attachments.values()).map((a) => ({ name: a.name, text: a.text }))
     });
   });
 

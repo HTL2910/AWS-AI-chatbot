@@ -8,7 +8,14 @@ import { applyUnifiedDiffToWorkspaceSmart } from "../apply/unifiedDiff";
 import { CommandRunner, CommandUpdateMessage } from "../terminal/commandRunner";
 
 type WebviewToExtensionMessage =
-  | { type: "userMessage"; id: string; text: string; ts: number; taggedFiles?: string[] }
+  | {
+      type: "userMessage";
+      id: string;
+      text: string;
+      ts: number;
+      taggedFiles?: string[];
+      attachments?: { name: string; text: string }[];
+    }
   | { type: "ready" }
   | { type: "setApiKey" }
   | { type: "moveRight" }
@@ -154,6 +161,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const maskedCtx = maskSensitive(ctx);
           const maskedQuestion = maskSensitive(msg.text);
           const tagged = (msg.taggedFiles || []).map((p) => maskSensitive(p));
+          const atts = (msg.attachments || [])
+            .slice(0, 8)
+            .map((a) => ({
+              name: maskSensitive(String(a.name || "file")),
+              text: maskSensitive(String(a.text || "")).slice(0, 50_000)
+            }))
+            .filter((a) => a.text.trim().length > 0);
 
           const prompt =
             "You are Safegraph AI inside VS Code. Answer concisely, propose code edits with clear steps.\n\n" +
@@ -164,6 +178,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             "Context:\n" +
             maskedCtx +
             (tagged.length ? "\n\nTagged files (@):\n" + tagged.join("\n") : "") +
+            (atts.length
+              ? "\n\nAttachments (uploaded):\n" +
+                atts
+                  .map((a) => `--- ${a.name} ---\n${a.text}`)
+                  .join("\n\n")
+              : "") +
             "\n\nUser question:\n" +
             maskedQuestion;
 
