@@ -26,8 +26,8 @@ def validate_api_key(api_key):
         return "Vui lòng nhập API key."
     if api_key.lower().startswith("set "):
         return "Không nhập cả lệnh `set`; chỉ nhập giá trị API key."
-    if not api_key.startswith("bedrock-api-key-"):
-        return "API key Bedrock thường bắt đầu bằng `bedrock-api-key-`. Vui lòng kiểm tra lại key."
+    if not (api_key.startswith("bedrock-api-key-") or api_key.startswith("ABSK")):
+        return "API key Bedrock thường bắt đầu bằng `bedrock-api-key-` hoặc `ABSK`. Vui lòng kiểm tra lại key."
     return None
 
 # Page configuration

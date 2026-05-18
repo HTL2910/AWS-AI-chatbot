@@ -38,8 +38,8 @@ if not api_key:
     print("❌ Không nhập gì cả!")
     exit(1)
 
-if not api_key.startswith("bedrock-api-key-"):
-    print("❌ API Key không hợp lệ! Phải bắt đầu bằng 'bedrock-api-key-'")
+if not (api_key.startswith("bedrock-api-key-") or api_key.startswith("ABSK")):
+    print("❌ API Key không hợp lệ! Phải bắt đầu bằng 'bedrock-api-key-' hoặc 'ABSK'")
     exit(1)
 
 # Update .env file
