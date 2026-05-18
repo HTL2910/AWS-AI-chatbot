@@ -1,0 +1,39 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                    🔑 QUICK FIX: API KEY HẾT HẠN                          ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+❌ VẤNĐỀ:
+   Bearer Token has expired (API Key hết hạn)
+
+✅ GIẢI PHÁP (3 BƯỚC):
+
+   1️⃣  Chạy script:
+       python get_new_api_key.py
+
+   2️⃣  Làm theo hướng dẫn:
+       - Mở AWS Console
+       - Tìm Bedrock API Keys
+       - Tạo key mới
+       - Copy và dán vào script
+
+   3️⃣  Kiểm tra:
+       python test_bedrock.py
+
+🧪 KIỂM TRA KẾT QUẢ:
+
+   ✅ Thành công:
+      ✅ SUCCESS!
+      📝 Response: {...}
+      💬 Claude: Xin chào!
+
+   ❌ Thất bại:
+      ❌ ERROR 403: Bearer Token has expired
+      → Quay lại bước 1
+
+📖 HƯỚNG DẪN CHI TIẾT:
+   docs/RENEW_API_KEY.md
+
+🚀 CHẠY ỨNG DỤNG:
+   streamlit run src/app.py
+
+═══════════════════════════════════════════════════════════════════════════════
