@@ -14,7 +14,7 @@ load_dotenv()
 # Configuration
 API_KEY = os.getenv("API_KEY")
 region = "ap-southeast-1"
-model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+model_id = "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
 
 print("=" * 70)
 print("🧪 BEDROCK API TEST")

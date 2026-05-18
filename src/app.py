@@ -112,10 +112,10 @@ with st.sidebar:
         )
     
     # Fixed configuration (no selection needed)
-    model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    model_id = "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
     region = "ap-southeast-1"
     
-    st.info(f"🤖 Model: Claude 3.5 Sonnet\n📍 Region: ap-southeast-1")
+    st.info(f"🤖 Model: Claude Haiku 4.5\n📍 Region: ap-southeast-1")
     
     # Configure button
     if st.button("🔧 Cấu hình Kết nối", use_container_width=True):
@@ -161,7 +161,7 @@ with st.sidebar:
     st.divider()
     if st.session_state.api_key_configured:
         st.success("🟢 Đã kết nối")
-        st.caption("🤖 Claude 3.5 Sonnet")
+        st.caption("🤖 Claude Haiku 4.5")
         st.caption("📍 ap-southeast-1")
     else:
         st.warning("🔴 Chưa kết nối")
