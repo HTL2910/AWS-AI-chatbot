@@ -9,10 +9,16 @@ export type BedrockConverseOptions = {
   signal?: AbortSignal;
 };
 
-export async function bedrockConverseText(
+export type BedrockConverseResult = {
+  text: string;
+  stopReason: string;
+  raw: any;
+};
+
+export async function bedrockConverse(
   userText: string,
   options: BedrockConverseOptions
-): Promise<string> {
+): Promise<BedrockConverseResult> {
   const region = options.region;
   const modelId = options.modelId;
   const apiKey = options.apiKey;
@@ -62,9 +68,15 @@ export async function bedrockConverseText(
 
   const parsed = JSON.parse(raw) as any;
   const content = parsed?.output?.message?.content;
+  const stopReason = String(parsed?.stopReason || parsed?.stop_reason || "").toLowerCase();
   if (Array.isArray(content)) {
     const text = content.map((c: any) => c?.text).filter(Boolean).join("\n");
-    if (text) return text;
+    if (text) return { text, stopReason, raw: parsed };
   }
-  return raw;
+  return { text: raw, stopReason, raw: parsed };
+}
+
+export async function bedrockConverseText(userText: string, options: BedrockConverseOptions): Promise<string> {
+  const r = await bedrockConverse(userText, options);
+  return r.text;
 }

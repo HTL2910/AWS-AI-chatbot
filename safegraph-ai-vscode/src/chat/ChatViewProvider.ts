@@ -1,11 +1,11 @@
 import * as vscode from "vscode";
 import { getChatWebviewHtml } from "./webviewHtml";
-import { bedrockConverseText } from "../bedrock/bedrockClient";
+import { bedrockConverse } from "../bedrock/bedrockClient";
 import { buildContext } from "../context/contextBuilder";
 import { maskSensitive } from "../security/mask";
 import { loadBedrockApiKeyFromDotEnv } from "../config/env";
-import { autoRunCommandsFromText } from "../terminal/runInTerminal";
-import { applyUnifiedDiffToWorkspace } from "../apply/unifiedDiff";
+import { applyUnifiedDiffToWorkspaceSmart } from "../apply/unifiedDiff";
+import { CommandRunner, CommandUpdateMessage } from "../terminal/commandRunner";
 
 type WebviewToExtensionMessage =
   | { type: "userMessage"; id: string; text: string; ts: number; taggedFiles?: string[] }
@@ -14,12 +14,15 @@ type WebviewToExtensionMessage =
   | { type: "moveRight" }
   | { type: "applyDiff"; diff: string }
   | { type: "stop" }
-  | { type: "suggestFiles"; query: string };
+  | { type: "suggestFiles"; query: string }
+  | { type: "runCommand"; id: string; cmd: string }
+  | { type: "cancelCommand"; id: string };
 
 type ExtensionToWebviewMessage =
   | { type: "assistantMessage"; id: string; text: string; ts: number; done?: boolean }
   | { type: "error"; message: string; ts: number }
-  | { type: "fileSuggestions"; items: { path: string; label: string }[]; ts: number };
+  | { type: "fileSuggestions"; items: { path: string; label: string }[]; ts: number }
+  | CommandUpdateMessage;
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = "safegraph.chatView";
@@ -27,11 +30,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private currentAbort?: AbortController;
   private autoRunDoneFor = new Set<string>();
+  private cmdRunner: CommandRunner;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel
-  ) {}
+  ) {
+    this.cmdRunner = new CommandRunner(output);
+  }
 
   resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -59,7 +65,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       if (msg.type === "applyDiff") {
         try {
-          await applyUnifiedDiffToWorkspace(msg.diff);
+          await applyUnifiedDiffToWorkspaceSmart(msg.diff, this.output);
           vscode.window.showInformationMessage("Safegraph AI: Applied changes.");
         } catch (e) {
           this.output.appendLine(`[safegraph-ai] applyDiff failed: ${String(e)}`);
@@ -95,6 +101,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } catch (e) {
           this.output.appendLine(`[safegraph-ai] suggestFiles failed: ${String(e)}`);
         }
+        return;
+      }
+      if (msg.type === "runCommand") {
+        const folders = vscode.workspace.workspaceFolders;
+        const cwd = folders?.[0]?.uri.fsPath || process.cwd();
+        this.cmdRunner.run(msg.id, msg.cmd, cwd, (m) => webviewView.webview.postMessage(m));
+        return;
+      }
+      if (msg.type === "cancelCommand") {
+        this.cmdRunner.cancel(msg.id, (m) => webviewView.webview.postMessage(m));
         return;
       }
       if (msg.type === "userMessage") {
@@ -144,7 +160,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             "If you want to run terminal commands, put ONLY the exact commands (one per line) inside a fenced code block labeled sh (```sh ... ```). " +
             "Do not prefix commands with '+', '-', bullets, or commentary.\n\n" +
             "If you propose file edits, include a unified diff inside a fenced code block labeled diff (```diff ... ```), " +
-            "with file paths relative to the workspace root.\n\n" +
+            "with file paths relative to the workspace root. For new files use --- /dev/null and +++ b/<path>. For deletes use +++ /dev/null.\n\n" +
             "Context:\n" +
             maskedCtx +
             (tagged.length ? "\n\nTagged files (@):\n" + tagged.join("\n") : "") +
@@ -160,18 +176,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           };
           webviewView.webview.postMessage(thinking);
 
-          const text = await bedrockConverseText(prompt, {
-            region,
-            modelId,
-            apiKey,
-            signal: this.currentAbort.signal
-          });
+          // Auto-continue if Bedrock stops due to max_tokens.
+          let combined = "";
+          let loops = 0;
+          let nextPrompt = prompt;
+          for (;;) {
+            const r = await bedrockConverse(nextPrompt, {
+              region,
+              modelId,
+              apiKey,
+              signal: this.currentAbort.signal
+            });
+            combined = (combined + (combined ? "\n" : "") + r.text).trim();
+            loops += 1;
+            if (this.currentAbort.signal.aborted) throw new Error("aborted");
+            if (r.stopReason !== "max_tokens") break;
+            if (loops >= 3) break;
+            nextPrompt =
+              "Continue from where you left off. Do not repeat earlier text.\n\nPrevious output:\n" +
+              combined +
+              "\n\nContinue:";
+          }
 
           let acc = "";
           const chunkSize = 80;
-          for (let i = 0; i < text.length; i += chunkSize) {
+          for (let i = 0; i < combined.length; i += chunkSize) {
             if (this.currentAbort.signal.aborted) throw new Error("aborted");
-            acc += text.slice(i, i + chunkSize);
+            acc += combined.slice(i, i + chunkSize);
             const delta: ExtensionToWebviewMessage = {
               type: "assistantMessage",
               id: msg.id,
@@ -192,10 +223,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           };
           webviewView.webview.postMessage(reply);
 
-          // Cursor-like behavior: auto-run safe commands from assistant output.
+          // Cursor-like behavior: propose terminal commands in UI (no terminal panel pop).
           if (!this.autoRunDoneFor.has(msg.id)) {
             this.autoRunDoneFor.add(msg.id);
-            await autoRunCommandsFromText(acc, this.output);
+            const cfg2 = vscode.workspace.getConfiguration("safegraph");
+            const mode = String(cfg2.get("autoRun") || "safe") as any;
+            const proposed = this.cmdRunner.proposeFromAssistantText(acc, mode);
+            if (proposed.length) {
+              webviewView.webview.postMessage({ type: "commandProposed", items: proposed, ts: Date.now() });
+            }
           }
         } catch (e) {
           this.output.appendLine(`[safegraph-ai] bedrock error: ${String(e)}`);

@@ -17,6 +17,7 @@ const DANGEROUS_TOKENS = [
 const SAFE_PREFIXES = [
   /^npm\s+(i|install|ci)\b/i,
   /^npm\s+run\s+\S+/i,
+  /^aws\s+configure\b/i,
   /^pnpm\s+(i|install)\b/i,
   /^pnpm\s+run\s+\S+/i,
   /^yarn\s+(install|add)\b/i,
@@ -55,4 +56,3 @@ export function decideCommand(cmd: string, mode: AutoRunMode): CommandDecision {
   }
   return { decision: "ask", reason: "auto-run mode ask" };
 }
-
