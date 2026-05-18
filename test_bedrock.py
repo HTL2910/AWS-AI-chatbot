@@ -14,7 +14,7 @@ load_dotenv()
 # Configuration
 API_KEY = os.getenv("API_KEY")
 region = "ap-southeast-1"
-model_id = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+model_id = "anthropic.claude-haiku-4-5-20251001-v1:0"
 
 print("=" * 70)
 print("🧪 BEDROCK API TEST")
