@@ -1,0 +1,77 @@
+{
+  "name": "safegraph-ai",
+  "displayName": "Safegraph AI",
+  "description": "MVP sidebar AI chat with local code-graph context and Bedrock integration.",
+  "version": "0.0.1",
+  "publisher": "safegraph",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished", "onView:safegraph.chatView", "onCommand:safegraph.openChat", "onCommand:safegraph.setBedrockApiKey", "onCommand:safegraph.moveChatRight"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "safegraph.setBedrockApiKey",
+        "title": "Safegraph AI: Set Bedrock API Key"
+      },
+      {
+        "command": "safegraph.moveChatRight",
+        "title": "Safegraph AI: Move Chat To Right Sidebar"
+      },
+      {
+        "command": "safegraph.openChat",
+        "title": "Safegraph AI: Open Chat"
+      }
+    ],
+    "configuration": {
+      "title": "Safegraph AI",
+      "properties": {
+        "safegraph.autoRun": {
+          "type": "string",
+          "enum": ["off", "safe", "ask"],
+          "default": "safe",
+          "description": "Auto-run commands in VS Code Terminal. 'safe' runs allowlisted commands automatically and asks for the rest."
+        },
+        "safegraph.region": {
+          "type": "string",
+          "default": "ap-southeast-1",
+          "description": "AWS region for Bedrock Runtime."
+        },
+        "safegraph.modelId": {
+          "type": "string",
+          "default": "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623",
+          "description": "Bedrock model identifier or inference profile ARN."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "safegraph",
+          "title": "Safegraph AI",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "safegraph": [
+        {
+          "id": "safegraph.chatView",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -p . -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.4"
+  }
+}

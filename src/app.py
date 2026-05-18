@@ -10,6 +10,16 @@ load_dotenv()
 
 BEDROCK_API_KEY_ENV = "AWS_BEARER_TOKEN_BEDROCK"
 
+DEFAULT_INFERENCE_PROFILE_ARN = (
+    "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
+)
+
+AVAILABLE_MODELS_AP_SOUTHEAST_1 = [
+    DEFAULT_INFERENCE_PROFILE_ARN,
+    "global.anthropic.claude-sonnet-4-6",
+    "anthropic.claude-3-haiku-20240307-v1:0",
+]
+
 
 def clean_api_key(value):
     if not value:
@@ -89,6 +99,10 @@ if "api_key" not in st.session_state:
     st.session_state.api_key = None
 if "api_key_configured" not in st.session_state:
     st.session_state.api_key_configured = False
+if "last_assistant_incomplete" not in st.session_state:
+    st.session_state.last_assistant_incomplete = False
+if "last_assistant_index" not in st.session_state:
+    st.session_state.last_assistant_index = None
 
 # Sidebar configuration
 with st.sidebar:
@@ -101,21 +115,46 @@ with st.sidebar:
     env_api_key = get_env_api_key()
     
     if env_api_key:
-        st.success("✅ API_KEY từ .env đã được tìm thấy")
+        st.success("✅ Đã tìm thấy API key trong .env (AWS_BEARER_TOKEN_BEDROCK hoặc API_KEY)")
         api_key = env_api_key
     else:
-        st.warning("⚠️ Chưa tìm thấy API_KEY trong .env")
+        st.warning("⚠️ Chưa tìm thấy AWS_BEARER_TOKEN_BEDROCK hoặc API_KEY trong .env")
         api_key = st.text_input(
             "Nhập API_KEY:",
             type="password",
             help="Lấy từ AWS Console (bedrock-api-key-...)"
         )
     
-    # Fixed configuration (no selection needed)
-    model_id = "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
+    # Model selection
+    model_id = st.selectbox(
+        "Chọn Model:",
+        AVAILABLE_MODELS_AP_SOUTHEAST_1,
+        help="Chọn model Claude phù hợp",
+    )
+
+    use_inference_profile = st.checkbox(
+        "Dùng Inference Profile ARN (bắt buộc nếu model không hỗ trợ on-demand)",
+        value=False,
+    )
+    inference_profile_arn = st.text_input(
+        "Inference Profile ARN (arn:aws:bedrock:...:application-inference-profile/...)",
+        type="password",
+        disabled=not use_inference_profile,
+    )
+
+    effective_model_id = model_id
+
+    # Region selection
+    region = st.selectbox(
+        "Chọn AWS Region:",
+        ["ap-southeast-1"],
+        help="Chọn region gần nhất với bạn",
+    )
+
+    # Force single region behavior even if UI changes later.
     region = "ap-southeast-1"
-    
-    st.info(f"🤖 Model: Claude Haiku 4.5 (via Inference Profile)\n📍 Region: ap-southeast-1")
+
+    st.info(f"Model: {effective_model_id}\nRegion: {region}")
     
     # Configure button
     if st.button("🔧 Cấu hình Kết nối", use_container_width=True):
@@ -125,7 +164,7 @@ with st.sidebar:
             if not api_key_error:
                 st.session_state.api_key = api_key
                 st.session_state.api_key_configured = True
-                st.session_state.model_id = model_id
+                st.session_state.model_id = effective_model_id
                 st.session_state.region = region
                 st.success("✅ Kết nối thành công!")
             else:
@@ -137,6 +176,56 @@ with st.sidebar:
             st.session_state.api_key_configured = False
     
     # Chat history management
+    st.divider()
+    st.subheader("Test Nhanh Models")
+
+    if st.button("Chay Test (/converse)", use_container_width=True, disabled=not bool(api_key)):
+        api_key_clean = clean_api_key(api_key)
+        api_key_err = validate_api_key(api_key_clean)
+        if api_key_err:
+            st.error(f"❌ {api_key_err}")
+        else:
+            import time
+
+            models_to_test = AVAILABLE_MODELS_AP_SOUTHEAST_1
+
+            results = []
+            headers = {"Authorization": f"Bearer {api_key_clean}", "Content-Type": "application/json"}
+            payload = {
+                "messages": [{"role": "user", "content": [{"text": "ping"}]}],
+                # Some models reject specifying both temperature and top_p/topP.
+                "inferenceConfig": {"maxTokens": 16, "temperature": 0.0},
+            }
+
+            with st.spinner("Dang test..."):
+                for m in models_to_test:
+                    url = f"https://bedrock-runtime.{region}.amazonaws.com/model/{m}/converse"
+                    t0 = time.perf_counter()
+                    try:
+                        r = requests.post(url, headers=headers, json=payload, timeout=20)
+                        ms = int((time.perf_counter() - t0) * 1000)
+                        ok = r.status_code == 200
+                        err = ""
+                        if not ok:
+                            err = (r.text or "").strip().replace("\n", " ")[:200]
+                            # Stop early if daily token quota is exhausted.
+                            if (
+                                r.status_code == 429
+                                and "Too many tokens per day" in err
+                            ):
+                                results.append({"model": m, "status": r.status_code, "ms": ms, "ok": ok, "error": err})
+                                break
+                            # Surface the common "needs inference profile" hint more clearly.
+                            if r.status_code == 400 and "on-demand throughput isnâ€™t supported" in err:
+                                err = err + " | Hint: cần Inference Profile ARN cho model này."
+                        results.append({"model": m, "status": r.status_code, "ms": ms, "ok": ok, "error": err})
+                    except Exception as ex:
+                        ms = int((time.perf_counter() - t0) * 1000)
+                        results.append({"model": m, "status": "ERR", "ms": ms, "ok": False, "error": str(ex)[:200]})
+                    time.sleep(2.0)
+
+            st.dataframe(results, use_container_width=True)
+
     st.divider()
     st.subheader("📝 Lịch sử Chat")
     
@@ -161,8 +250,8 @@ with st.sidebar:
     st.divider()
     if st.session_state.api_key_configured:
         st.success("🟢 Đã kết nối")
-        st.caption("🤖 Claude Haiku 4.5")
-        st.caption("📍 ap-southeast-1")
+        st.caption(f"🤖 {st.session_state.model_id}")
+        st.caption(f"📍 {st.session_state.region}")
     else:
         st.warning("🔴 Chưa kết nối")
 
@@ -207,6 +296,68 @@ else:
         placeholder="Hỏi tôi bất cứ điều gì...",
         key="user_input"
     )
+
+    # Cursor-like "Continue" if previous assistant response was cut by maxTokens.
+    if st.session_state.last_assistant_incomplete and st.session_state.last_assistant_index is not None:
+        if st.button("Continue", use_container_width=True):
+            try:
+                with st.spinner("⏳ Đang tiếp tục..."):
+                    messages_for_api = []
+                    for msg in st.session_state.messages:
+                        messages_for_api.append(
+                            {
+                                "role": msg["role"],
+                                "content": [{"text": msg["content"]}],
+                            }
+                        )
+                    # Do not add a visible user message to history; just nudge the model to continue.
+                    messages_for_api.append({"role": "user", "content": [{"text": "Continue."}]})
+
+                    url = f"https://bedrock-runtime.{st.session_state.region}.amazonaws.com/model/{st.session_state.model_id}/converse"
+                    headers = {
+                        "Authorization": f"Bearer {st.session_state.api_key}",
+                        "Content-Type": "application/json",
+                    }
+                    payload = {
+                        "messages": messages_for_api,
+                        "inferenceConfig": {
+                            "maxTokens": 1024,
+                            "temperature": 0.7,
+                        },
+                    }
+                    response = requests.post(url, headers=headers, json=payload)
+
+                    if response.status_code != 200:
+                        st.error(f"❌ Lỗi {response.status_code}: {response.text}")
+                        st.session_state.last_assistant_incomplete = False
+                        st.session_state.last_assistant_index = None
+                        st.rerun()
+
+                    result = response.json()
+                    stop_reason = (result.get("stopReason") or result.get("stop_reason") or "").lower()
+                    next_text = (
+                        result.get("output", {})
+                        .get("message", {})
+                        .get("content", [{}])[0]
+                        .get("text", "")
+                    )
+                    if not next_text:
+                        next_text = str(result)
+
+                    idx = st.session_state.last_assistant_index
+                    st.session_state.messages[idx]["content"] = (
+                        st.session_state.messages[idx]["content"].rstrip() + "\n" + next_text.lstrip()
+                    )
+
+                    st.session_state.last_assistant_incomplete = stop_reason in ("max_tokens", "max-tokens")
+                    if not st.session_state.last_assistant_incomplete:
+                        st.session_state.last_assistant_index = None
+
+                    st.rerun()
+            except Exception as e:
+                st.error(f"❌ Lỗi kết nối: {str(e)}")
+                st.session_state.last_assistant_incomplete = False
+                st.session_state.last_assistant_index = None
     
     if user_input:
         # Add user message to history
@@ -227,57 +378,53 @@ else:
         # Get response from Bedrock
         try:
             with st.spinner("⏳ Đang suy nghĩ..."):
-                # Prepare messages for API - format Anthropic
+                # Prepare messages for Bedrock Converse API format
                 messages_for_api = []
                 for msg in st.session_state.messages:
-                    messages_for_api.append({
-                        "role": msg["role"],
-                        "content": msg["content"]
-                    })
+                    messages_for_api.append(
+                        {
+                            "role": msg["role"],
+                            "content": [{"text": msg["content"]}],
+                        }
+                    )
                 
                 # Call Bedrock API
-                url = f"https://bedrock-runtime.{st.session_state.region}.amazonaws.com/model/{st.session_state.model_id}/invoke"
+                url = f"https://bedrock-runtime.{st.session_state.region}.amazonaws.com/model/{st.session_state.model_id}/converse"
                 
                 # Headers cực kỳ quan trọng
                 headers = {
                     "Authorization": f"Bearer {st.session_state.api_key}",
-                    "X-Amzn-Bedrock-Api-Key": st.session_state.api_key,
                     "Content-Type": "application/json"
                 }
                 
                 # Payload format Anthropic
                 payload = {
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 1024,
-                    "temperature": 0.7,
-                    "messages": messages_for_api
+                    "messages": messages_for_api,
+                    "inferenceConfig": {
+                        "maxTokens": 1024,
+                        "temperature": 0.7,
+                    },
                 }
                 
-                response = requests.post(
-                    url,
-                    headers=headers,
-                    data=json.dumps(payload)
-                )
+                response = requests.post(url, headers=headers, json=payload)
                 
                 if response.status_code == 200:
                     result = response.json()
+                    stop_reason = (result.get("stopReason") or result.get("stop_reason") or "").lower()
                     
-                    # Handle both response formats
-                    if 'content' in result:
-                        # Standard Anthropic format
-                        assistant_message = result['content'][0]['text']
-                    elif 'Output' in result and isinstance(result['Output'], dict):
-                        # Inference profile format - try to extract text
-                        output = result['Output']
-                        if '__type' in output and 'UnknownOperationException' in output['__type']:
-                            # This is an error response
-                            error_message = f"❌ Lỗi API: {output}"
-                            st.error(error_message)
-                            st.session_state.messages.pop()  # Remove user message
-                            st.rerun()
-                            return
-                        assistant_message = str(output)
-                    else:
+                    # Converse response shape: output.message.content[].text
+                    assistant_message = ""
+                    try:
+                        assistant_message = (
+                            result.get("output", {})
+                            .get("message", {})
+                            .get("content", [{}])[0]
+                            .get("text", "")
+                        )
+                    except Exception:
+                        assistant_message = ""
+
+                    if not assistant_message:
                         assistant_message = str(result)
                     
                     # Add assistant message to history
@@ -285,6 +432,12 @@ else:
                         "role": "assistant",
                         "content": assistant_message
                     })
+
+                    # Track truncation for Continue
+                    st.session_state.last_assistant_incomplete = stop_reason in ("max_tokens", "max-tokens")
+                    st.session_state.last_assistant_index = (
+                        len(st.session_state.messages) - 1 if st.session_state.last_assistant_incomplete else None
+                    )
                     
                     # Display assistant message
                     st.markdown(f"""
