@@ -1,0 +1,249 @@
+================================================================================
+🤖 AWS BEDROCK CHATBOT - STREAMLIT
+================================================================================
+
+📦 DỰ ÁN HOÀN THÀNH
+
+Bạn đã nhận được một ứng dụng Chatbot hoàn chỉnh với:
+✅ Giao diện Streamlit giống ChatGPT
+✅ Kết nối Amazon Bedrock API
+✅ Hỗ trợ Claude 3.5 Sonnet, Opus, Haiku
+✅ Lưu lịch sử chat
+✅ Cấu hình AWS credentials an toàn
+✅ Hướng dẫn chi tiết bằng tiếng Việt
+
+================================================================================
+📁 CÁC FILE TRONG DỰ ÁN
+================================================================================
+
+📖 HƯỚNG DẪN (Đọc Trước Tiên)
+├── START_HERE.md ⭐ (Bắt đầu nhanh - 5 phút)
+├── README.md (Tổng quan dự án)
+├── HOW_TO_USE.md (Cách sử dụng ứng dụng)
+├── QUICK_START_WINDOWS.md (Quick start cho Windows)
+├── HUONG_DAN_AWS.md (Hướng dẫn AWS chi tiết)
+├── CREDENTIALS_GUIDE.md (Hướng dẫn credentials)
+├── PROJECT_SUMMARY.md (Tóm tắt dự án)
+└── INDEX.md (Danh sách tất cả file)
+
+💻 CODE
+├── app.py ⭐ (Ứng dụng Streamlit chính)
+├── setup_credentials.py (Cấu hình AWS credentials)
+└── example_usage.py (7 ví dụ sử dụng API)
+
+⚙️ CONFIGURATION
+├── requirements.txt (Dependencies)
+├── .env (AWS credentials - không commit!)
+└── .gitignore (Ignore files)
+
+================================================================================
+🚀 BẮT ĐẦU NHANH (5 PHÚT)
+================================================================================
+
+Bước 1: Cài Đặt Dependencies
+$ pip install -r requirements.txt
+
+Bước 2: Cấu Hình AWS Credentials
+$ python setup_credentials.py
+(Làm theo hướng dẫn trên màn hình)
+
+Bước 3: Chạy Ứng Dụng
+$ streamlit run app.py
+
+Bước 4: Chat!
+- Mở Sidebar (bên trái)
+- Click "🔧 Cấu Hình Kết Nối"
+- Bắt đầu chat!
+
+================================================================================
+🔑 LẤY AWS CREDENTIALS
+================================================================================
+
+Cách 1: Sử Dụng Setup Script (Dễ Nhất)
+$ python setup_credentials.py
+
+Cách 2: Cấu Hình Thủ Công
+1. Vào https://console.aws.amazon.com
+2. Tìm IAM → Users → Chọn user
+3. Security credentials → Create access key
+4. Copy Access Key ID và Secret Access Key
+5. Tạo file .env:
+   AWS_ACCESS_KEY_ID=your_key
+   AWS_SECRET_ACCESS_KEY=your_secret
+   AWS_DEFAULT_REGION=us-east-1
+
+================================================================================
+🎯 CẤU HÌNH QUYỀN BEDROCK
+================================================================================
+
+1. Vào AWS IAM Console
+2. Chọn user của bạn
+3. Add permissions → Attach policies directly
+4. Tìm "AmazonBedrockFullAccess"
+5. Chọn → Add permissions
+
+================================================================================
+🎮 SỬ DỤNG ỨNG DỤNG
+================================================================================
+
+1. Chạy: streamlit run app.py
+2. Mở Sidebar (bên trái)
+3. Nhập API Key (nếu cần)
+4. Chọn Model: Claude 3.5 Sonnet (khuyến nghị)
+5. Chọn Region: us-east-1
+6. Click: "🔧 Cấu Hình Kết Nối"
+7. Bắt đầu chat!
+
+Tính Năng:
+✅ Chat interface giống ChatGPT
+✅ Lưu lịch sử chat
+✅ Export chat history (JSON)
+✅ Xóa lịch sử
+✅ Chọn model và region
+✅ Xử lý lỗi
+
+================================================================================
+⚠️ LỖI THƯỜNG GẶP
+================================================================================
+
+Lỗi: ModuleNotFoundError
+Giải pháp: pip install -r requirements.txt
+
+Lỗi: InvalidSignatureException
+Giải pháp: Kiểm tra API Key trong .env
+
+Lỗi: AccessDenied
+Giải pháp: Thêm AmazonBedrockFullAccess policy trong IAM
+
+Lỗi: ModelNotFound
+Giải pháp: Thử region khác (us-west-2 hoặc eu-west-1)
+
+================================================================================
+📚 HƯỚNG DẪN CHI TIẾT
+================================================================================
+
+Để Bắt Đầu:
+→ Đọc START_HERE.md
+
+Để Sử Dụng Ứng Dụng:
+→ Đọc HOW_TO_USE.md
+
+Để Cấu Hình AWS:
+→ Đọc HUONG_DAN_AWS.md
+
+Để Cấu Hình Credentials:
+→ Đọc CREDENTIALS_GUIDE.md
+
+Để Tóm Tắt Dự Án:
+→ Đọc PROJECT_SUMMARY.md
+
+Để Xem Tất Cả File:
+→ Đọc INDEX.md
+
+================================================================================
+🛡️ BẢO MẬT
+================================================================================
+
+✅ NÊN LÀM:
+- Lưu credentials trong .env
+- Sử dụng IAM User (không Root)
+- Giới hạn quyền (chỉ Bedrock)
+- Rotate keys định kỳ
+- Sử dụng MFA
+
+❌ KHÔNG NÊN LÀM:
+- Không commit .env lên Git
+- Không chia sẻ Secret Key
+- Không hardcode credentials
+- Không sử dụng Root Account
+- Không để credentials trong logs
+
+================================================================================
+🤖 MODELS KHẢ DỤNG
+================================================================================
+
+Claude 3.5 Sonnet (Khuyến Nghị)
+- Tốc độ: ⚡⚡⚡
+- Chất lượng: ⭐⭐⭐⭐⭐
+- Giá: $
+
+Claude 3 Opus
+- Tốc độ: ⚡⚡
+- Chất lượng: ⭐⭐⭐⭐⭐
+- Giá: $$
+- Dùng cho: Tasks phức tạp
+
+Claude 3 Haiku
+- Tốc độ: ⚡⚡⚡⚡
+- Chất lượng: ⭐⭐⭐
+- Giá: $
+- Dùng cho: Tasks đơn giản
+
+================================================================================
+🌍 REGIONS HỖ TRỢ
+================================================================================
+
+us-east-1 (N. Virginia) - ✅ Khuyến nghị
+us-west-2 (Oregon)
+eu-west-1 (Ireland)
+ap-southeast-1 (Singapore)
+
+================================================================================
+📊 DEPENDENCIES
+================================================================================
+
+streamlit==1.35.0
+boto3==1.34.0
+python-dotenv==1.0.0
+
+Cài đặt: pip install -r requirements.txt
+
+================================================================================
+💡 TIPS & TRICKS
+================================================================================
+
+Tăng Tốc Độ:
+- Chọn Claude 3 Haiku
+- Giảm maxTokens từ 1024 xuống 512
+- Giảm temperature từ 0.7 xuống 0.5
+
+Tăng Chất Lượng:
+- Chọn Claude 3 Opus
+- Tăng maxTokens từ 1024 lên 2048
+- Giảm temperature từ 0.7 xuống 0.3
+
+Sử Dụng Prompts Hiệu Quả:
+- Viết rõ ràng và cụ thể
+- Cung cấp context
+- Yêu cầu format output
+
+================================================================================
+📞 LIÊN HỆ & HỖ TRỢ
+================================================================================
+
+Nếu gặp vấn đề:
+1. Kiểm tra các file hướng dẫn
+2. Xem phần Troubleshooting
+3. Chạy setup_credentials.py lại
+4. Kiểm tra AWS IAM permissions
+
+================================================================================
+🎉 CHÚC BẠN THÀNH CÔNG!
+================================================================================
+
+Bây giờ bạn đã sẵn sàng:
+✅ Cài đặt ứng dụng
+✅ Cấu hình AWS credentials
+✅ Chạy Chatbot
+✅ Sử dụng Bedrock API
+✅ Học thêm về AWS
+
+Bắt đầu từ START_HERE.md ngay bây giờ!
+
+$ streamlit run app.py
+
+================================================================================
+Phiên bản: 1.0.0
+Cập nhật lần cuối: May 2026
+Tác giả: AWS Bedrock Chatbot Team
+================================================================================

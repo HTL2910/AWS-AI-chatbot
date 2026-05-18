@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Image Analyzer</title>
+    <style>
+        body { font-family: sans-serif; max-width: 500px; margin: 50px auto; text-align: center; }
+        #preview { width: 100%; margin: 20px 0; display: none; }
+        .result { text-align: left; background: #f4f4f4; padding: 15px; border-radius: 8px; display: none; }
+        .loading { display: none; color: blue; }
+    </style>
+</head>
+<body>
+    <h2>AI Phân Tích Ảnh</h2>
+    <input type="file" id="imageInput" accept="image/*">
+    <img id="preview">
+    <div id="loading" class="loading">Đang chờ AI trả lời...</div>
+    <div id="result" class="result"></div>
+
+    <script>
+        const API_URL = "https://aoc9p9wbi0.execute-api.ap-southeast-1.amazonaws.com/stage_AI_Caption/ImageCaptionAI";
+        const imageInput = document.getElementById('imageInput');
+        const preview = document.getElementById('preview');
+        const resultDiv = document.getElementById('result');
+        const loading = document.getElementById('loading');
+
+        imageInput.onchange = evt => {
+            const file = evt.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = e => {
+                    preview.src = e.target.result;
+                    preview.style.display = 'block';
+                    analyzeImage(e.target.result.split(',')[1]); // Lấy phần Base64
+                };
+                reader.readAsDataURL(file);
+            }
+        };
+
+        async function analyzeImage(base64Data) {
+            loading.style.display = 'block';
+            resultDiv.style.display = 'none';
+            
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    body: JSON.stringify({ image: base64Data })
+                });
+                const data = await response.json();
+                
+                resultDiv.innerHTML = `
+                    <b>Mô tả:</b> ${data.caption} <br>
+                    <b>Tags:</b> ${data.tags.join(', ')} <br>
+                    <b>Đánh giá:</b> ${data.rating_star} ⭐
+                `;
+                resultDiv.style.display = 'block';
+            } catch (err) {
+                alert("Lỗi kết nối API!");
+            } finally {
+                loading.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
