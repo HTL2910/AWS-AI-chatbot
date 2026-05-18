@@ -89,6 +89,10 @@ if "api_key" not in st.session_state:
     st.session_state.api_key = None
 if "api_key_configured" not in st.session_state:
     st.session_state.api_key_configured = False
+if "model_id" not in st.session_state:
+    st.session_state.model_id = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+if "region" not in st.session_state:
+    st.session_state.region = "ap-southeast-1"
 
 # Sidebar configuration
 with st.sidebar:
@@ -119,6 +123,7 @@ with st.sidebar:
             "anthropic.claude-3-opus-20240229-v1:0",
             "anthropic.claude-3-haiku-20240307-v1:0"
         ],
+        index=0 if st.session_state.model_id == "anthropic.claude-3-5-sonnet-20240620-v1:0" else (1 if st.session_state.model_id == "anthropic.claude-3-opus-20240229-v1:0" else 2),
         help="Chọn model Claude phù hợp"
     )
     
@@ -126,6 +131,7 @@ with st.sidebar:
     region = st.selectbox(
         "Chọn AWS Region:",
         ["us-east-1", "us-west-2", "eu-west-1", "ap-southeast-1"],
+        index=["us-east-1", "us-west-2", "eu-west-1", "ap-southeast-1"].index(st.session_state.region),
         help="Chọn region gần nhất với bạn"
     )
     
