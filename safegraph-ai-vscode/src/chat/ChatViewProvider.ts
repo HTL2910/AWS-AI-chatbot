@@ -128,7 +128,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           let apiKey = (await this.context.secrets.get("safegraph.bedrockApiKey")) || "";
           if (!apiKey) {
-            const envKey = await loadBedrockApiKeyFromDotEnv();
+            const envKey = await loadBedrockApiKeyFromDotEnv([this.context.extensionUri.fsPath]);
             if (envKey) {
               apiKey = envKey;
               await this.context.secrets.store("safegraph.bedrockApiKey", apiKey);

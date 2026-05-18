@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import json
 import os
+from urllib.parse import quote
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -29,6 +30,11 @@ def clean_api_key(value):
 
 def get_env_api_key():
     return clean_api_key(os.getenv(BEDROCK_API_KEY_ENV) or os.getenv("API_KEY"))
+
+
+def bedrock_converse_url(region, model_id):
+    encoded_model_id = quote(model_id, safe="")
+    return f"https://bedrock-runtime.{region}.amazonaws.com/model/{encoded_model_id}/converse"
 
 
 def validate_api_key(api_key):
@@ -199,7 +205,7 @@ with st.sidebar:
 
             with st.spinner("Dang test..."):
                 for m in models_to_test:
-                    url = f"https://bedrock-runtime.{region}.amazonaws.com/model/{m}/converse"
+                    url = bedrock_converse_url(region, m)
                     t0 = time.perf_counter()
                     try:
                         r = requests.post(url, headers=headers, json=payload, timeout=20)
@@ -313,7 +319,7 @@ else:
                     # Do not add a visible user message to history; just nudge the model to continue.
                     messages_for_api.append({"role": "user", "content": [{"text": "Continue."}]})
 
-                    url = f"https://bedrock-runtime.{st.session_state.region}.amazonaws.com/model/{st.session_state.model_id}/converse"
+                    url = bedrock_converse_url(st.session_state.region, st.session_state.model_id)
                     headers = {
                         "Authorization": f"Bearer {st.session_state.api_key}",
                         "Content-Type": "application/json",
@@ -389,7 +395,7 @@ else:
                     )
                 
                 # Call Bedrock API
-                url = f"https://bedrock-runtime.{st.session_state.region}.amazonaws.com/model/{st.session_state.model_id}/converse"
+                url = bedrock_converse_url(st.session_state.region, st.session_state.model_id)
                 
                 # Headers cực kỳ quan trọng
                 headers = {

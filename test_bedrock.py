@@ -6,15 +6,17 @@ Test script để kiểm tra Bedrock API connection
 import requests
 import json
 import os
+from urllib.parse import quote
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
 # Configuration
-API_KEY = os.getenv("API_KEY")
+API_KEY = os.getenv("AWS_BEARER_TOKEN_BEDROCK") or os.getenv("API_KEY")
 region = "ap-southeast-1"
 model_id = "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
+encoded_model_id = quote(model_id, safe="")
 
 print("=" * 70)
 print("🧪 BEDROCK API TEST")
@@ -33,24 +35,21 @@ print(f"🤖 Model: {model_id}\n")
 print("📝 Test 1: Gửi tin nhắn đơn giản...")
 print("-" * 70)
 
-url = f"https://bedrock-runtime.{region}.amazonaws.com/model/{model_id}/invoke"
+url = f"https://bedrock-runtime.{region}.amazonaws.com/model/{encoded_model_id}/converse"
 
 headers = {
     "Authorization": f"Bearer {API_KEY}",
-    "X-Amzn-Bedrock-Api-Key": API_KEY,
     "Content-Type": "application/json"
 }
 
 payload = {
-    "anthropic_version": "bedrock-2023-05-31",
-    "max_tokens": 1024,
-    "temperature": 0.7,
     "messages": [
         {
             "role": "user",
-            "content": "Xin chào! Bạn là ai?"
+            "content": [{"text": "Xin chào! Bạn là ai?"}]
         }
-    ]
+    ],
+    "inferenceConfig": {"maxTokens": 1024, "temperature": 0.7}
 }
 
 try:
@@ -72,9 +71,9 @@ try:
         result = response.json()
         print(f"📝 Response: {json.dumps(result, indent=2)}\n")
         
-        # Extract message
-        if 'content' in result and len(result['content']) > 0:
-            message = result['content'][0]['text']
+        content = result.get("output", {}).get("message", {}).get("content", [])
+        if content:
+            message = "".join(part.get("text", "") for part in content)
             print(f"💬 Claude: {message}\n")
     else:
         print(f"❌ ERROR {response.status_code}")
@@ -93,16 +92,14 @@ print("📝 Test 2: Cuộc trò chuyện nhiều lượt...")
 print("-" * 70)
 
 messages = [
-    {"role": "user", "content": "Tôi tên là Hùng"},
-    {"role": "assistant", "content": "Rất vui được gặp bạn, Hùng!"},
-    {"role": "user", "content": "Tôi là ai?"}
+    {"role": "user", "content": [{"text": "Tôi tên là Hùng"}]},
+    {"role": "assistant", "content": [{"text": "Rất vui được gặp bạn, Hùng!"}]},
+    {"role": "user", "content": [{"text": "Tôi là ai?"}]}
 ]
 
 payload = {
-    "anthropic_version": "bedrock-2023-05-31",
-    "max_tokens": 1024,
-    "temperature": 0.7,
-    "messages": messages
+    "messages": messages,
+    "inferenceConfig": {"maxTokens": 1024, "temperature": 0.7}
 }
 
 try:
@@ -116,8 +113,9 @@ try:
     if response.status_code == 200:
         print("✅ SUCCESS!")
         result = response.json()
-        if 'content' in result and len(result['content']) > 0:
-            message = result['content'][0]['text']
+        content = result.get("output", {}).get("message", {}).get("content", [])
+        if content:
+            message = "".join(part.get("text", "") for part in content)
             print(f"💬 Claude: {message}\n")
     else:
         print(f"❌ ERROR {response.status_code}: {response.text}\n")
