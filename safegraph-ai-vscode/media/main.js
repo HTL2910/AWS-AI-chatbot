@@ -7,15 +7,26 @@
   const sendEl = document.getElementById("send");
   const newChatEl = document.getElementById("newChat");
   const agentModeEl = document.getElementById("agentMode");
+  const setKeyEl = document.getElementById("setKey");
+  const checkKeyEl = document.getElementById("checkKey");
+  const openLogEl = document.getElementById("openLog");
   const attachFileEl = document.getElementById("attachFile");
+  const addActiveFileEl = document.getElementById("addActiveFile");
+  const addSelectionEl = document.getElementById("addSelection");
+  const reviewWorkspaceEl = document.getElementById("reviewWorkspace");
+  const fixDiagnosticsEl = document.getElementById("fixDiagnostics");
   const fileInputEl = document.getElementById("fileInput");
   const mentionEl = document.getElementById("mention");
 
   const assistantById = new Map();
   const assistantState = new Map(); // id -> { text, done, stopped }
+  const messagePayloadById = new Map();
   const taggedFiles = new Map(); // path -> label
   const attachments = new Map(); // id -> { id, name, text, size, mime }
   let currentMessageId = null; // track current streaming message
+  let lastSubmit = { text: "", at: 0 };
+  let lastAssistantFinal = { text: "", at: 0 };
+  let loadingTicker = null;
   let agentMode = document.body?.dataset?.agentDefault !== "false";
   const taggedFilesEl = document.createElement("div");
   taggedFilesEl.className = "taggedFilesList";
@@ -29,12 +40,50 @@
 
   const rootEl = document.querySelector(".root");
 
+  function resetCurrentRequest() {
+    currentMessageId = null;
+    sendEl.textContent = "Send";
+    sendEl.disabled = false;
+  }
+
+  function stopCurrentRequest() {
+    if (!currentMessageId) return;
+    const stoppedId = currentMessageId;
+    vscode.postMessage({ type: "stop" });
+    setAssistantText(stoppedId, "Stopped.", true);
+    resetCurrentRequest();
+  }
+
+  function updateLoadingElapsed() {
+    document.querySelectorAll(".msg.assistant.loading").forEach((el) => {
+      const startedAt = Number(el.getAttribute("data-started-at") || Date.now());
+      const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      const target = el.querySelector(".elapsed");
+      if (target) target.textContent = `${elapsed}s elapsed`;
+    });
+  }
+
+  function ensureLoadingTicker() {
+    if (loadingTicker) return;
+    loadingTicker = setInterval(updateLoadingElapsed, 1000);
+  }
+
+  function stopLoadingTickerIfIdle() {
+    if (document.querySelector(".msg.assistant.loading")) return;
+    if (loadingTicker) {
+      clearInterval(loadingTicker);
+      loadingTicker = null;
+    }
+  }
+
   function clearChat() {
     messagesEl.innerHTML = "";
     assistantById.clear();
     assistantState.clear();
-    currentMessageId = null;
-    sendEl.textContent = "Send";
+    messagePayloadById.clear();
+    lastSubmit = { text: "", at: 0 };
+    lastAssistantFinal = { text: "", at: 0 };
+    resetCurrentRequest();
     vscode.postMessage({ type: "clearChat" });
   }
 
@@ -52,6 +101,13 @@
     agentModeEl.classList.toggle("active", agentMode);
   }
 
+  function autosizeInput() {
+    inputEl.style.height = "auto";
+    const maxHeight = 160;
+    inputEl.style.height = `${Math.min(inputEl.scrollHeight, maxHeight)}px`;
+    inputEl.style.overflowY = inputEl.scrollHeight > maxHeight ? "auto" : "hidden";
+  }
+
   if (agentModeEl) {
     agentModeEl.addEventListener("click", (e) => {
       e.preventDefault();
@@ -60,6 +116,128 @@
       inputEl.focus();
     });
     renderAgentMode();
+  }
+
+  if (setKeyEl) {
+    setKeyEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      vscode.postMessage({ type: "setApiKey" });
+      inputEl.focus();
+    });
+  }
+
+  if (checkKeyEl) {
+    checkKeyEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      vscode.postMessage({ type: "checkApiKey" });
+      inputEl.focus();
+    });
+  }
+
+  if (openLogEl) {
+    openLogEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      vscode.postMessage({ type: "openLog" });
+      inputEl.focus();
+    });
+  }
+
+  function appendInlineMarkdown(parent, text) {
+    const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+    let last = 0;
+    for (const m of String(text || "").matchAll(re)) {
+      if (m.index > last) parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+      const token = m[0];
+      if (token.startsWith("**")) {
+        const strong = document.createElement("strong");
+        strong.textContent = token.slice(2, -2);
+        parent.appendChild(strong);
+      } else {
+        const code = document.createElement("code");
+        code.textContent = token.slice(1, -1);
+        parent.appendChild(code);
+      }
+      last = m.index + token.length;
+    }
+    if (last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
+  }
+
+  function renderMarkdown(container, text) {
+    container.innerHTML = "";
+    const source = String(text || "").replace(/\r\n/g, "\n");
+    const blocks = source.split(/```(\w+)?\n([\s\S]*?)```/g);
+
+    function renderPlainBlock(blockText) {
+      const lines = blockText.split("\n");
+      let paragraph = [];
+      let list = null;
+
+      function flushParagraph() {
+        if (!paragraph.length) return;
+        const p = document.createElement("p");
+        appendInlineMarkdown(p, paragraph.join("\n"));
+        container.appendChild(p);
+        paragraph = [];
+      }
+
+      function flushList() {
+        if (!list) return;
+        container.appendChild(list);
+        list = null;
+      }
+
+      for (const line of lines) {
+        const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+        if (bullet) {
+          flushParagraph();
+          if (!list) list = document.createElement("ul");
+          const li = document.createElement("li");
+          appendInlineMarkdown(li, bullet[1]);
+          list.appendChild(li);
+          continue;
+        }
+        if (!line.trim()) {
+          flushParagraph();
+          flushList();
+          continue;
+        }
+        flushList();
+        paragraph.push(line);
+      }
+
+      flushParagraph();
+      flushList();
+    }
+
+    for (let i = 0; i < blocks.length; i += 3) {
+      renderPlainBlock(blocks[i] || "");
+      if (i + 2 < blocks.length) {
+        const lang = blocks[i + 1] || "";
+        const body = blocks[i + 2] || "";
+        const pre = document.createElement("pre");
+        pre.className = "codeBlock";
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "codeCopyBtn";
+        copy.textContent = "Copy";
+        copy.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(body.trim());
+            copy.textContent = "Copied";
+            setTimeout(() => (copy.textContent = "Copy"), 1200);
+          } catch {
+            copy.textContent = "Failed";
+            setTimeout(() => (copy.textContent = "Copy"), 1200);
+          }
+        });
+        const code = document.createElement("code");
+        code.textContent = body.trim();
+        if (lang) code.dataset.lang = lang;
+        pre.appendChild(copy);
+        pre.appendChild(code);
+        container.appendChild(pre);
+      }
+    }
   }
 
   function appendMessage(role, text) {
@@ -72,8 +250,8 @@
       const before = parts.shift();
       if (before) {
         const p = document.createElement("div");
-        p.className = "plain";
-        p.textContent = before.trim();
+        p.className = "markdown";
+        renderMarkdown(p, before.trim());
         row.appendChild(p);
       }
 
@@ -104,8 +282,8 @@
 
         if (rest) {
           const p2 = document.createElement("div");
-          p2.className = "plain";
-          p2.textContent = rest;
+          p2.className = "markdown";
+          renderMarkdown(p2, rest);
           row.appendChild(p2);
         }
       }
@@ -257,9 +435,25 @@
     }
     assistantState.set(id, { text, done: !!done });
 
+    if (done) {
+      const finalText = String(text || "").trim();
+      const now = Date.now();
+      if (finalText && finalText === lastAssistantFinal.text && now - lastAssistantFinal.at < 5000) {
+        el.remove();
+        assistantById.delete(id);
+        assistantState.delete(id);
+        if (currentMessageId === id) resetCurrentRequest();
+        return;
+      }
+      lastAssistantFinal = { text: finalText, at: now };
+    }
+
     // During streaming (done=false), render partial text with loader animation.
     if (!done) {
       el.classList.add("loading");
+      if (!el.getAttribute("data-started-at")) {
+        el.setAttribute("data-started-at", String(Date.now()));
+      }
       let content = el.querySelector(".assistantContent");
       if (!content) {
         el.innerHTML = "";
@@ -267,28 +461,73 @@
         content.className = "assistantContent";
         el.appendChild(content);
 
+        const elapsed = document.createElement("div");
+        elapsed.className = "elapsed";
+        elapsed.textContent = "0s elapsed";
+        el.appendChild(elapsed);
+
         const loader = document.createElement("div");
         loader.className = "loadingDots";
         loader.innerHTML = "<span></span><span></span><span></span>";
         el.appendChild(loader);
       }
       content.textContent = String(text || "Thinking...");
+      updateLoadingElapsed();
+      ensureLoadingTicker();
       messagesEl.scrollTop = messagesEl.scrollHeight;
       return;
     }
 
     // Replace contents on final.
     el.classList.remove("loading");
+    el.removeAttribute("data-started-at");
+    stopLoadingTickerIfIdle();
     el.innerHTML = "";
     const tmp = document.createElement("div");
-    tmp.className = "plain";
-    tmp.textContent = String(text || "");
+    tmp.className = "markdown";
+    renderMarkdown(tmp, String(text || ""));
     el.appendChild(tmp);
+
+    const actionBar = document.createElement("div");
+    actionBar.className = "messageActions";
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "miniBtn";
+    copyBtn.textContent = "Copy";
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(String(text || ""));
+        copyBtn.textContent = "Copied";
+        setTimeout(() => (copyBtn.textContent = "Copy"), 1200);
+      } catch {
+        copyBtn.textContent = "Copy failed";
+        setTimeout(() => (copyBtn.textContent = "Copy"), 1200);
+      }
+    });
+
+    const regenBtn = document.createElement("button");
+    regenBtn.type = "button";
+    regenBtn.className = "miniBtn";
+    regenBtn.textContent = "Regenerate";
+    regenBtn.addEventListener("click", () => {
+      const payload = messagePayloadById.get(id);
+      if (!payload || currentMessageId) return;
+      const nextId = String(Date.now());
+      lastSubmit = { text: "", at: 0 };
+      lastAssistantFinal = { text: "", at: 0 };
+      messagePayloadById.set(nextId, { ...payload, id: nextId, ts: Date.now() });
+      setAssistantText(nextId, "Regenerating...", false);
+      vscode.postMessage({ ...payload, id: nextId, ts: Date.now() });
+    });
+
+    actionBar.appendChild(copyBtn);
+    actionBar.appendChild(regenBtn);
+    el.appendChild(actionBar);
 
     // Reset button and currentMessageId on done
     if (currentMessageId === id) {
-      currentMessageId = null;
-      sendEl.textContent = "Send";
+      resetCurrentRequest();
     }
 
     // Diff previews (per-file) only on done=true.
@@ -346,7 +585,11 @@
     if (!msg || typeof msg.type !== "string") return;
     if (msg.type === "assistantMessage")
       setAssistantText(msg.id || "assistant", msg.text, msg.done);
-    if (msg.type === "error") appendMessage("error", msg.message);
+    if (msg.type === "error") {
+      appendMessage("error", msg.message);
+      resetCurrentRequest();
+    }
+    if (msg.type === "contextItem") addContextItem(msg);
     if (msg.type === "fileSuggestions") renderSuggestions(msg.items || []);
     if (msg.type === "commandProposed") renderCommandPanel(msg.items || []);
     if (msg.type === "commandUpdate") updateCommand(msg);
@@ -354,12 +597,95 @@
 
   attachFileEl.addEventListener("click", (e) => {
     e.preventDefault();
-    // Cursor-like: attach local files (upload) instead of picking workspace paths.
-    if (fileInputEl) fileInputEl.click();
+    vscode.postMessage({ type: "pickFilesOrFolders" });
+    inputEl.focus();
   });
+
+  if (addActiveFileEl) {
+    addActiveFileEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      vscode.postMessage({ type: "addActiveFile" });
+      inputEl.focus();
+    });
+  }
+
+  if (addSelectionEl) {
+    addSelectionEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      vscode.postMessage({ type: "addSelection" });
+      inputEl.focus();
+    });
+  }
+
+  function sendPrompt(text, overrides) {
+    if (currentMessageId) {
+      return;
+    }
+
+    const rawText = String(text || inputEl.value || "");
+    const cleanText = rawText.trim();
+    if (!cleanText) return;
+
+    function clearSentInput() {
+      const currentText = String(inputEl.value || "");
+      if (!currentText || currentText === rawText || currentText.trim() === cleanText) {
+        inputEl.value = "";
+        autosizeInput();
+      }
+    }
+
+    const now = Date.now();
+    if (cleanText === lastSubmit.text && now - lastSubmit.at < 2500) {
+      clearSentInput();
+      inputEl.focus();
+      return;
+    }
+    lastSubmit = { text: cleanText, at: now };
+
+    const id = String(Date.now());
+    clearSentInput();
+    setTimeout(clearSentInput, 0);
+    appendMessage("user", cleanText);
+    setAssistantText(id, "Preparing request...", false);
+    inputEl.focus();
+
+    const payload = {
+      type: "userMessage",
+      id,
+      text: cleanText,
+      ts: Date.now(),
+      agentMode,
+      taggedFiles: Array.from(taggedFiles.keys()),
+      attachments: Array.from(attachments.values()).map((a) => ({ name: a.name, text: a.text })),
+      ...(overrides || {})
+    };
+    messagePayloadById.set(id, payload);
+    vscode.postMessage(payload);
+  }
+
+  if (reviewWorkspaceEl) {
+    reviewWorkspaceEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      sendPrompt(
+        "Review the current workspace changes. Focus on bugs, regressions, missing tests, and risky code. Give concise findings first with file paths."
+      );
+    });
+  }
+
+  if (fixDiagnosticsEl) {
+    fixDiagnosticsEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      sendPrompt(
+        "Fix the current diagnostics, type errors, and obvious failing code in this workspace. If changes are needed, return a clean unified diff.",
+        { agentMode: true }
+      );
+    });
+  }
 
   const MAX_FILE_BYTES = 200 * 1024; // 200KB per file
   const MAX_TOTAL_BYTES = 800 * 1024; // 800KB total
+  const MAX_DROPPED_FOLDER_FILES = 80;
+  const acceptedTextPattern = /\.(txt|md|json|js|ts|tsx|jsx|css|html|yaml|yml|py|java|c|cpp|h|hpp|cs|rs|go|sh|ps1|cmd|toml|xml|sql)$/i;
 
   function currentAttachmentBytes() {
     let sum = 0;
@@ -410,6 +736,28 @@
     attachmentsEl.appendChild(list);
   }
 
+  function addContextItem(item) {
+    if (!item || typeof item !== "object") return;
+    if (item.kind === "file" && item.path) {
+      taggedFiles.set(item.path, item.label || item.path);
+      renderTaggedFiles();
+      return;
+    }
+    if (item.kind === "attachment" && item.text) {
+      const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const name = item.name || "selection";
+      const text = String(item.text || "");
+      attachments.set(id, {
+        id,
+        name,
+        text,
+        size: text.length,
+        mime: "text/plain"
+      });
+      renderAttachments();
+    }
+  }
+
   async function readFileAsText(file) {
     return await new Promise((resolve, reject) => {
       const r = new FileReader();
@@ -423,12 +771,12 @@
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
 
-    const acceptedTextPattern = /\.(txt|md|json|js|ts|tsx|jsx|css|html|yaml|yml|py|java|c|cpp|cs|rs|go|sh|ps1|cmd)$/i;
-
-    for (const file of files) {
+    for (const item of files) {
+      const file = item && item.file ? item.file : item;
       if (!file) continue;
+      const displayName = String((item && item.name) || file.webkitRelativePath || file.name || "file");
       if ((file.size || 0) > MAX_FILE_BYTES) {
-        appendMessage("error", `Attachment too large: ${file.name} (max ${Math.round(MAX_FILE_BYTES / 1024)}KB)`);
+        appendMessage("error", `Attachment too large: ${displayName} (max ${Math.round(MAX_FILE_BYTES / 1024)}KB)`);
         continue;
       }
       if (currentAttachmentBytes() + (file.size || 0) > MAX_TOTAL_BYTES) {
@@ -437,7 +785,7 @@
       }
 
       const mime = String(file.type || "");
-      const name = String(file.name || "file");
+      const name = displayName;
       let text = `[binary file: ${name}, ${Math.round((file.size || 0) / 1024)}KB]`;
       if (mime.startsWith("text/") || acceptedTextPattern.test(name)) {
         try {
@@ -452,6 +800,82 @@
     }
 
     renderAttachments();
+  }
+
+  async function fileFromEntry(entry) {
+    return await new Promise((resolve, reject) => {
+      try {
+        entry.file(resolve, reject);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  async function readDirectoryEntries(reader) {
+    const all = [];
+    for (;;) {
+      const batch = await new Promise((resolve, reject) => {
+        try {
+          reader.readEntries(resolve, reject);
+        } catch (e) {
+          reject(e);
+        }
+      });
+      if (!batch || batch.length === 0) break;
+      all.push(...batch);
+    }
+    return all;
+  }
+
+  async function collectEntryFiles(entry, out) {
+    if (!entry || out.length >= MAX_DROPPED_FOLDER_FILES) return;
+    if (entry.isFile) {
+      const file = await fileFromEntry(entry);
+      const name = String(entry.fullPath || file.name || "file").replace(/^\/+/, "");
+      out.push({ file, name });
+      return;
+    }
+    if (!entry.isDirectory) return;
+
+    const dirName = String(entry.name || "");
+    if ([".git", "node_modules", "dist", "build", "out", "venv", ".venv", "__pycache__", ".next", ".cache"].includes(dirName)) {
+      return;
+    }
+
+    const children = await readDirectoryEntries(entry.createReader());
+    for (const child of children) {
+      if (out.length >= MAX_DROPPED_FOLDER_FILES) break;
+      await collectEntryFiles(child, out);
+    }
+  }
+
+  async function collectFilesFromDataTransferItems(items) {
+    const out = [];
+    const list = Array.from(items || []);
+    for (const item of list) {
+      if (!item || item.kind !== "file") continue;
+      const getEntry = item.webkitGetAsEntry || item.getAsEntry;
+      const entry = typeof getEntry === "function" ? getEntry.call(item) : null;
+      if (entry) {
+        await collectEntryFiles(entry, out);
+      }
+      if (out.length >= MAX_DROPPED_FOLDER_FILES) break;
+    }
+    return out;
+  }
+
+  function parseDroppedUris(dataTransfer) {
+    if (!dataTransfer || typeof dataTransfer.getData !== "function") return [];
+    const raw =
+      dataTransfer.getData("text/uri-list") ||
+      dataTransfer.getData("text/plain") ||
+      dataTransfer.getData("text");
+    return String(raw || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"))
+      .filter((line) => line.startsWith("file:") || line.startsWith("/") || line.startsWith("vscode-remote:"));
   }
 
   if (fileInputEl) {
@@ -520,6 +944,7 @@
   }
 
   inputEl.addEventListener("input", () => {
+    autosizeInput();
     maybeSuggestFiles();
   });
 
@@ -527,6 +952,10 @@
     if (e.key === "Escape") {
       mentionEl.hidden = true;
       mentionEl.innerHTML = "";
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!currentMessageId) sendPrompt(inputEl.value);
     }
   });
 
@@ -570,11 +999,11 @@
     taggedFilesEl.appendChild(list);
   }
 
-  // Drag-drop support for files
+  // Drag-drop support for files and folders
   const dragOverlay = document.createElement("div");
   dragOverlay.className = "dragOverlay";
   dragOverlay.hidden = true;
-  dragOverlay.textContent = "Drop files to attach and reference...";
+  dragOverlay.textContent = "Drop files or folders to attach and reference...";
   dragOverlay.addEventListener("dragover", (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -588,11 +1017,21 @@
   let fileDragDepth = 0;
   let hideOverlayTimer = null;
 
-  function isFileDrag(e) {
+  function isFileOrUriDrag(e) {
     const dt = e && e.dataTransfer;
     if (!dt || !dt.types) return false;
     try {
-      return Array.from(dt.types).includes("Files");
+      return Array.from(dt.types).some((t) => {
+        const type = String(t || "").toLowerCase();
+        return (
+          type === "files" ||
+          type === "text/uri-list" ||
+          type === "text/plain" ||
+          type.includes("uri-list") ||
+          type.includes("code.uri") ||
+          type.includes("vscode")
+        );
+      });
     } catch {
       return false;
     }
@@ -611,7 +1050,7 @@
     if (names.length > 0) {
       dragOverlay.textContent = `Drop to attach: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` +${names.length - 3} more` : ""}`;
     } else {
-      dragOverlay.textContent = "Drop files to attach and reference...";
+      dragOverlay.textContent = "Drop files or folders to attach and reference...";
     }
   }
 
@@ -636,7 +1075,7 @@
   function handleDragEnter(e) {
     e.preventDefault();
     e.stopPropagation();
-    if (!isFileDrag(e)) return;
+    if (!isFileOrUriDrag(e)) return;
     fileDragDepth++;
     showOverlay(e);
   }
@@ -644,7 +1083,7 @@
   function handleDragOver(e) {
     e.preventDefault();
     e.stopPropagation();
-    if (!isFileDrag(e)) return;
+    if (!isFileOrUriDrag(e)) return;
     try {
       e.dataTransfer.dropEffect = "copy";
     } catch {}
@@ -658,7 +1097,7 @@
     if (fileDragDepth <= 0) scheduleHideOverlay(60);
   }
 
-  function handleDrop(e) {
+  async function handleDrop(e) {
     e.preventDefault();
     e.stopPropagation();
     fileDragDepth = 0;
@@ -668,15 +1107,29 @@
       hideOverlayTimer = null;
     }
 
-    const files = e.dataTransfer.files;
-    if (!files || files.length === 0) {
-      // Debug signal in UI (better than silent no-op)
-      appendMessage("error", "Drop received but no files were attached (blocked by host or non-file drag).");
+    const droppedUris = parseDroppedUris(e.dataTransfer);
+    const entryFiles = await collectFilesFromDataTransferItems(e.dataTransfer.items);
+    if (entryFiles.length > 0) {
+      await attachFilesFromList(entryFiles);
+      if (entryFiles.length >= MAX_DROPPED_FOLDER_FILES) {
+        appendMessage("error", `Dropped folder truncated at ${MAX_DROPPED_FOLDER_FILES} files.`);
+      }
       return;
     }
 
-    // Drag/drop = local upload (attachments), not workspace tagging.
-    attachFilesFromList(files);
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      await attachFilesFromList(files);
+      return;
+    }
+
+    if (droppedUris.length > 0) {
+      vscode.postMessage({ type: "droppedUris", uris: droppedUris });
+      return;
+    }
+
+    // Debug signal in UI (better than silent no-op)
+    appendMessage("error", "Drop received but no files or folders were attached (blocked by host or non-file drag).");
   }
 
   // Keep local listeners (they help with consistent leave depth), but global listeners below
@@ -697,7 +1150,7 @@
   // In VS Code webviews, drop can be blocked unless we preventDefault at the window/document level.
   // Use capture to ensure we win against any nested handlers.
   function globalDragOver(e) {
-    if (!isFileDrag(e)) return;
+    if (!isFileOrUriDrag(e)) return;
     e.preventDefault();
     try {
       e.dataTransfer.dropEffect = "copy";
@@ -707,14 +1160,14 @@
 
   function globalDrop(e) {
     if (!e || !e.dataTransfer) return;
-    if (!isFileDrag(e)) return;
+    if (!isFileOrUriDrag(e)) return;
     e.preventDefault();
     e.stopPropagation();
-    handleDrop(e);
+    void handleDrop(e);
   }
 
   function globalDragEnter(e) {
-    if (!isFileDrag(e)) return;
+    if (!isFileOrUriDrag(e)) return;
     e.preventDefault();
     try {
       e.dataTransfer.dropEffect = "copy";
@@ -731,31 +1184,20 @@
 
   formEl.addEventListener("submit", (e) => {
     e.preventDefault();
-    
-    // If currently streaming, stop the message instead of sending a new one
+    if (!currentMessageId) sendPrompt(inputEl.value);
+  });
+
+  sendEl.addEventListener("click", (e) => {
+    e.preventDefault();
     if (currentMessageId) {
-      vscode.postMessage({ type: "stop" });
+      stopCurrentRequest();
       return;
     }
-    
-    const text = String(inputEl.value || "").trim();
-    if (!text) return;
-    const id = String(Date.now());
-    appendMessage("user", text);
-    inputEl.value = "";
-    inputEl.focus();
-    vscode.postMessage({
-      type: "userMessage",
-      id,
-      text,
-      ts: Date.now(),
-      agentMode,
-      taggedFiles: Array.from(taggedFiles.keys()),
-      attachments: Array.from(attachments.values()).map((a) => ({ name: a.name, text: a.text }))
-    });
+    sendPrompt(inputEl.value);
   });
 
   vscode.postMessage({ type: "ready" });
+  autosizeInput();
 
   const cmdState = new Map(); // id -> { cmd, status, output }
   const cmdPanel = document.createElement("div");

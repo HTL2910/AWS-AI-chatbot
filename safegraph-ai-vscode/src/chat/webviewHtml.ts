@@ -42,16 +42,25 @@ export function getChatWebviewHtml(
         </div>
         <div class="topbarActions">
           <button id="agentMode" class="topbarBtn" type="button" title="Let Safegraph apply diffs and run safe commands">Agent Off</button>
+          <button id="setKey" class="topbarBtn" type="button" title="Set Bedrock API key in VS Code SecretStorage">Key</button>
+          <button id="checkKey" class="topbarBtn" type="button" title="Show which Bedrock API key source is being used">Check</button>
+          <button id="openLog" class="topbarBtn" type="button" title="Open Safegraph AI logs">Log</button>
           <button id="newChat" class="topbarBtn" type="button" title="Start a new chat">New Chat</button>
         </div>
       </div>
       <div id="messages" class="messages" aria-label="Chat messages"></div>
       <form id="composer" class="composer">
         <div id="mention" class="mention" hidden></div>
-        <button id="attachFile" class="attachBtn" type="button" title="Attach files">📎</button>
+        <div class="contextTools" aria-label="Context tools">
+          <button id="attachFile" class="toolBtn" type="button" title="Attach local files or folders">Attach</button>
+          <button id="addActiveFile" class="toolBtn" type="button" title="Add the active editor file to context">File</button>
+          <button id="addSelection" class="toolBtn" type="button" title="Add the active editor selection to context">Selection</button>
+          <button id="reviewWorkspace" class="toolBtn" type="button" title="Ask Safegraph to review the current workspace changes">Review</button>
+          <button id="fixDiagnostics" class="toolBtn" type="button" title="Ask Safegraph to fix current diagnostics and errors">Fix Diagnostics</button>
+        </div>
         <input id="fileInput" type="file" multiple hidden />
-        <input id="input" class="input" type="text" placeholder="Type a message..." />
-        <button id="send" class="send" type="submit">Send</button>
+        <textarea id="input" class="input" rows="1" placeholder="Ask or type @ to add files..."></textarea>
+        <button id="send" class="send" type="button">Send</button>
       </form>
     </div>
     <script nonce="${n}" src="${scriptUri}"></script>

@@ -46,6 +46,29 @@ def validate_api_key(api_key):
         return "API key Bedrock thường bắt đầu bằng `bedrock-api-key-` hoặc `ABSK`. Vui lòng kiểm tra lại key."
     return None
 
+
+def is_expired_bedrock_token(response):
+    body = response.text or ""
+    return response.status_code == 403 and "Bearer Token has expired" in body
+
+
+def format_bedrock_error(response):
+    if is_expired_bedrock_token(response):
+        return (
+            "Bedrock API key da het han. Tao key moi trong AWS Console, cap nhat "
+            "AWS_BEARER_TOKEN_BEDROCK/API_KEY trong .env hoac nhap key moi o sidebar, "
+            "sau do bam 'Cau hinh Ket noi' lai."
+        )
+    return f"Loi {response.status_code}: {response.text}"
+
+
+def clear_expired_connection(response):
+    if is_expired_bedrock_token(response):
+        st.session_state.api_key = None
+        st.session_state.api_key_configured = False
+        st.session_state.last_assistant_incomplete = False
+        st.session_state.last_assistant_index = None
+
 # Page configuration
 st.set_page_config(
     page_title="AWS Bedrock Chatbot",
@@ -214,6 +237,8 @@ with st.sidebar:
                         err = ""
                         if not ok:
                             err = (r.text or "").strip().replace("\n", " ")[:200]
+                            if is_expired_bedrock_token(r):
+                                err = format_bedrock_error(r)
                             # Stop early if daily token quota is exhausted.
                             if (
                                 r.status_code == 429
@@ -334,7 +359,8 @@ else:
                     response = requests.post(url, headers=headers, json=payload)
 
                     if response.status_code != 200:
-                        st.error(f"❌ Lỗi {response.status_code}: {response.text}")
+                        clear_expired_connection(response)
+                        st.error(f"❌ {format_bedrock_error(response)}")
                         st.session_state.last_assistant_incomplete = False
                         st.session_state.last_assistant_index = None
                         st.rerun()
@@ -456,7 +482,8 @@ else:
                     
                     st.rerun()
                 else:
-                    error_message = f"❌ Lỗi {response.status_code}: {response.text}"
+                    clear_expired_connection(response)
+                    error_message = f"❌ {format_bedrock_error(response)}"
                     st.error(error_message)
                     st.session_state.messages.pop()  # Remove user message
                 

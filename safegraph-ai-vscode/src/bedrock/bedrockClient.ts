@@ -16,6 +16,11 @@ export type BedrockConverseResult = {
   raw: any;
 };
 
+export function isExpiredBearerTokenError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error);
+  return /Bedrock\s+403/i.test(message) && /Bearer Token has expired/i.test(message);
+}
+
 async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }

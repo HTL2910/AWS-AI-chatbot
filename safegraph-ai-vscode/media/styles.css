@@ -183,6 +183,12 @@ body {
   white-space: pre-wrap;
 }
 
+.elapsed {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .loadingDots {
   display: inline-flex;
   align-items: center;
@@ -219,6 +225,74 @@ body {
 
 .plain {
   white-space: pre-wrap;
+}
+
+.markdown {
+  white-space: normal;
+}
+
+.markdown p {
+  margin: 0 0 10px;
+}
+
+.markdown p:last-child,
+.markdown ul:last-child,
+.markdown .codeBlock:last-child {
+  margin-bottom: 0;
+}
+
+.markdown ul {
+  margin: 0 0 10px;
+  padding-left: 20px;
+}
+
+.markdown li {
+  margin: 2px 0;
+}
+
+.markdown code {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(2, 6, 23, 0.55);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+}
+
+.codeBlock {
+  position: relative;
+  margin: 0 0 10px;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 6px;
+  background: rgba(2, 6, 23, 0.62);
+}
+
+.codeCopyBtn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.92);
+  color: var(--muted);
+  border-radius: 4px;
+  padding: 3px 6px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.codeCopyBtn:hover {
+  color: var(--text);
+  background: rgba(30, 41, 59, 0.95);
+}
+
+.codeBlock code {
+  display: block;
+  border: none;
+  background: transparent;
+  padding: 0;
+  white-space: pre;
 }
 
 .diffBlock {
@@ -331,12 +405,19 @@ body {
 
 .composer {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: 1fr auto;
   gap: 8px;
   padding: 10px;
   border-top: 1px solid var(--border);
   background: var(--panel);
   position: relative;
+}
+
+.contextTools {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .mention {
@@ -373,12 +454,17 @@ body {
 }
 
 .input {
+  min-height: 36px;
+  max-height: 160px;
   background: rgba(148, 163, 184, 0.08);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 6px;
   padding: 8px 10px;
   outline: none;
+  resize: none;
+  font: inherit;
+  line-height: 1.4;
 }
 
 .input:focus {
@@ -398,16 +484,17 @@ body {
   background: rgba(239, 68, 68, 0.35);
 }
 
-.attachBtn {
+.toolBtn {
   border: 1px solid rgba(59, 130, 246, 0.75);
   background: rgba(59, 130, 246, 0.25);
   color: var(--text);
   border-radius: 6px;
-  padding: 8px 10px;
+  padding: 5px 8px;
   cursor: pointer;
+  font-size: 12px;
 }
 
-.attachBtn:hover {
+.toolBtn:hover {
   background: rgba(59, 130, 246, 0.35);
 }
 
@@ -492,6 +579,21 @@ body {
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--border);
+}
+
+.miniBtn {
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--muted);
+  border-radius: 5px;
+  padding: 4px 7px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.miniBtn:hover {
+  color: var(--text);
+  background: rgba(148, 163, 184, 0.14);
 }
 
 .send:hover {

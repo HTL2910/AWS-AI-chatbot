@@ -11,6 +11,19 @@ function takeLastLines(text: string, maxLines: number) {
   return lines.slice(Math.max(0, lines.length - maxLines)).join("\n");
 }
 
+function resolveWorkspaceFilePath(filePath: string) {
+  if (filePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(filePath)) {
+    return vscode.Uri.file(filePath);
+  }
+
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length > 0) {
+    return vscode.Uri.joinPath(folders[0].uri, filePath);
+  }
+
+  return vscode.Uri.file(filePath);
+}
+
 async function getGitInfo() {
   try {
     const folders = vscode.workspace.workspaceFolders;
@@ -129,10 +142,10 @@ export async function buildContext(options: ContextBuildOptions = {}) {
     parts.push("Tagged files (@):");
     for (const fp of includeFiles) {
       try {
-        const uri = vscode.Uri.file(fp);
+        const uri = resolveWorkspaceFilePath(fp);
         const bytes = await vscode.workspace.fs.readFile(uri);
         const text = Buffer.from(bytes).toString("utf8");
-        parts.push(`--- ${fp} ---`);
+        parts.push(`--- ${fp} (${uri.fsPath}) ---`);
         parts.push(takeLastLines(text, 150));
       } catch {
         parts.push(`--- ${fp} (unreadable) ---`);

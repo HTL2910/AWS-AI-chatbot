@@ -312,7 +312,13 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
   // We apply hunks in order; unified diffs are ordered top-down.
   let lineOffset = 0;
 
-  function findHunkStartIndex(h: Hunk): number | null {
+  function sameLine(a: string | undefined, b: string, loose: boolean) {
+    if (a == null) return false;
+    if (a === b) return true;
+    return loose && a.trim() === b.trim();
+  }
+
+  function findHunkStartIndex(h: Hunk, loose = false): number | null {
     // Build an "old-file" signature from context+del lines (adds don't exist in old file).
     const sig = h.lines.filter((l) => l.kind !== "add").map((l) => l.text);
     if (sig.length === 0) return null;
@@ -320,10 +326,10 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
     // Search for the first signature line, then verify sequential match.
     const first = sig[0];
     for (let start = 0; start <= out.length - 1; start++) {
-      if (out[start] !== first) continue;
+      if (!sameLine(out[start], first, loose)) continue;
       let ok = true;
       for (let j = 0; j < sig.length; j++) {
-        if (start + j >= out.length || out[start + j] !== sig[j]) {
+        if (start + j >= out.length || !sameLine(out[start + j], sig[j], loose)) {
           ok = false;
           break;
         }
@@ -333,14 +339,14 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
     return null;
   }
 
-  function applyOneHunk(h: Hunk, idx0: number) {
+  function applyOneHunk(h: Hunk, idx0: number, loose = false) {
     let idx = idx0;
     for (const hl of h.lines) {
       if (hl.kind === "context") {
-        if (out[idx] !== hl.text) throw new Error("Context mismatch while applying diff.");
+        if (!sameLine(out[idx], hl.text, loose)) throw new Error("Context mismatch while applying diff.");
         idx++;
       } else if (hl.kind === "del") {
-        if (out[idx] !== hl.text) throw new Error("Delete line mismatch while applying diff.");
+        if (!sameLine(out[idx], hl.text, loose)) throw new Error("Delete line mismatch while applying diff.");
         out.splice(idx, 1);
         lineOffset -= 1;
       } else if (hl.kind === "add") {
@@ -356,8 +362,13 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
     let idx = (h.oldStart - 1) + lineOffset;
     if (idx < 0 || idx > out.length) {
       const fuzzy = findHunkStartIndex(h);
-      if (fuzzy == null) throw new Error("Hunk out of range.");
-      idx = fuzzy;
+      if (fuzzy == null) {
+        const looseFuzzy = findHunkStartIndex(h, true);
+        if (looseFuzzy == null) throw new Error("Hunk out of range.");
+        idx = looseFuzzy;
+      } else {
+        idx = fuzzy;
+      }
     }
 
     try {
@@ -365,8 +376,15 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
     } catch {
       // Fallback: try fuzzy locate if strict position fails due to drift.
       const fuzzy = findHunkStartIndex(h);
-      if (fuzzy == null) throw new Error("Context mismatch while applying diff.");
-      applyOneHunk(h, fuzzy);
+      if (fuzzy != null) {
+        applyOneHunk(h, fuzzy);
+        continue;
+      }
+
+      // Last local fallback: allow whitespace/indent drift in context and delete lines.
+      const looseFuzzy = findHunkStartIndex(h, true);
+      if (looseFuzzy == null) throw new Error("Context mismatch while applying diff.");
+      applyOneHunk(h, looseFuzzy, true);
     }
   }
   return out;
@@ -498,9 +516,12 @@ async function runGitApply3Way(rootFsPath: string, diffText: string, output?: vs
 }
 
 export async function applyUnifiedDiffToWorkspaceSmart(diffText: string, output?: vscode.OutputChannel) {
+  let firstError: any;
   try {
     await applyUnifiedDiffToWorkspace(diffText);
+    return;
   } catch (e: any) {
+    firstError = e;
     const msg = String(e?.message || e);
     // Only fallback for common patch drift issues.
     if (!/Hunk out of range|Context mismatch|Delete line mismatch/i.test(msg)) {
@@ -510,7 +531,19 @@ export async function applyUnifiedDiffToWorkspaceSmart(diffText: string, output?
     const rootFsPath = folders?.[0]?.uri.fsPath;
     if (!rootFsPath) throw e;
     output?.appendLine(`[safegraph-ai] apply fuzzy failed (${msg}); trying git apply --3way fallback`);
-    await runGitApply3Way(rootFsPath, diffText, output);
-    output?.appendLine("[safegraph-ai] git apply --3way succeeded");
+    try {
+      await runGitApply3Way(rootFsPath, diffText, output);
+      output?.appendLine("[safegraph-ai] git apply --3way succeeded");
+    } catch (gitError: any) {
+      const gitMsg = String(gitError?.message || gitError);
+      if (/corrupt patch/i.test(gitMsg)) {
+        throw new Error(
+          `AI returned a malformed diff that could not be repaired locally. First local apply error: ${String(
+            firstError?.message || firstError
+          )}. Git error: ${gitMsg}`
+        );
+      }
+      throw gitError;
+    }
   }
 }
