@@ -13,12 +13,14 @@ type WebviewToExtensionMessage =
       id: string;
       text: string;
       ts: number;
+      agentMode?: boolean;
       taggedFiles?: string[];
       attachments?: { name: string; text: string }[];
     }
   | { type: "ready" }
   | { type: "setApiKey" }
   | { type: "moveRight" }
+  | { type: "clearChat" }
   | { type: "applyDiff"; diff: string }
   | { type: "stop" }
   | { type: "suggestFiles"; query: string }
@@ -31,12 +33,52 @@ type ExtensionToWebviewMessage =
   | { type: "fileSuggestions"; items: { path: string; label: string }[]; ts: number }
   | CommandUpdateMessage;
 
+function formatApplyError(e: unknown) {
+  const raw = String(e instanceof Error ? e.message : e);
+  const normalized = raw.replace(/^Error:\s*/i, "").trim();
+
+  if (/corrupt patch/i.test(normalized)) {
+    return [
+      `Safegraph AI: Apply failed: ${normalized}`,
+      "Lỗi là patch AI trả về không đúng format unified diff nên VS Code chưa apply được.",
+      "Cách sửa: bấm New Chat hoặc hỏi lại AI: tạo lại diff sạch, chỉ có ```diff, không kèm giải thích trong block diff.",
+      "Vì sao: nếu trong block diff có chữ giải thích, hoặc số dòng hunk bị lệch, git sẽ báo corrupt patch."
+    ].join("\n");
+  }
+
+  if (/Context mismatch|Delete line mismatch|Hunk out of range|patch does not apply|does not match/i.test(normalized)) {
+    return [
+      `Safegraph AI: Apply failed: ${normalized}`,
+      "Lỗi là nội dung file hiện tại không còn khớp với diff.",
+      "Cách sửa: hỏi lại AI tạo diff mới dựa trên file hiện tại.",
+      "Vì sao: file đã đổi sau khi AI tạo patch, nên dòng context không tìm thấy nữa."
+    ].join("\n");
+  }
+
+  return `Safegraph AI: Apply failed: ${normalized}`;
+}
+
+function extractDiffBlocks(text: string) {
+  const diffs: string[] = [];
+  const re = /```diff\s*([\s\S]*?)```/gi;
+  for (const m of String(text || "").matchAll(re)) {
+    const diff = String(m[1] || "").trim();
+    if (diff) diffs.push(diff);
+  }
+  return diffs;
+}
+
+function hasShellFileWrite(text: string) {
+  return /(^|\n)\s*(cat\s+>\s+|tee\s+|touch\s+|echo\s+.+>\s+|printf\s+.+>\s+)/i.test(String(text || ""));
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = "safegraph.chatView";
 
   private view?: vscode.WebviewView;
   private currentAbort?: AbortController;
   private autoRunDoneFor = new Set<string>();
+  private history: { role: "user" | "assistant"; text: string }[] = [];
   private cmdRunner: CommandRunner;
 
   constructor(
@@ -58,7 +100,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [this.context.extensionUri]
     };
 
-    webviewView.webview.html = getChatWebviewHtml(webviewView.webview, this.context.extensionUri);
+    let version = "0.0.1";
+    try {
+      const fs = require("fs");
+      const pkgPath = this.context.extensionUri.fsPath + "/package.json";
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+      version = pkg.version || "0.0.1";
+    } catch (e) {
+      this.output.appendLine(`[safegraph-ai] failed to read version: ${String(e)}`);
+    }
+
+    const agentModeDefault = Boolean(vscode.workspace.getConfiguration("safegraph").get("agentModeDefault", true));
+    webviewView.webview.html = getChatWebviewHtml(
+      webviewView.webview,
+      this.context.extensionUri,
+      version,
+      agentModeDefault
+    );
 
     webviewView.webview.onDidReceiveMessage(async (msg: WebviewToExtensionMessage) => {
       if (msg.type === "ready") return;
@@ -70,13 +128,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await vscode.commands.executeCommand("safegraph.moveChatRight");
         return;
       }
+      if (msg.type === "clearChat") {
+        this.history = [];
+        this.currentAbort?.abort();
+        this.output.appendLine("[safegraph-ai] chat history cleared");
+        return;
+      }
       if (msg.type === "applyDiff") {
         try {
           await applyUnifiedDiffToWorkspaceSmart(msg.diff, this.output);
           vscode.window.showInformationMessage("Safegraph AI: Applied changes.");
         } catch (e) {
-          this.output.appendLine(`[safegraph-ai] applyDiff failed: ${String(e)}`);
-          vscode.window.showErrorMessage(`Safegraph AI: Apply failed: ${String(e)}`);
+          const formatted = formatApplyError(e);
+          this.output.appendLine(`[safegraph-ai] applyDiff failed: ${formatted}`);
+          vscode.window.showErrorMessage(formatted, { modal: true });
         }
         return;
       }
@@ -148,6 +213,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           const cfg = vscode.workspace.getConfiguration("safegraph");
           const region = String(cfg.get("region") || "ap-southeast-1");
+          const autoRunMode = String(cfg.get("autoRun") || "safe");
           const modelId = String(
             cfg.get("modelId") ||
               "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
@@ -160,6 +226,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           });
           const maskedCtx = maskSensitive(ctx);
           const maskedQuestion = maskSensitive(msg.text);
+          const conversation = this.history
+            .slice(-8)
+            .map((h) => `${h.role === "user" ? "User" : "Safegraph AI"}: ${maskSensitive(h.text).slice(0, 2000)}`)
+            .join("\n\n");
           const tagged = (msg.taggedFiles || []).map((p) => maskSensitive(p));
           const atts = (msg.attachments || [])
             .slice(0, 8)
@@ -170,22 +240,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             .filter((a) => a.text.trim().length > 0);
 
           const prompt =
-            "You are Safegraph AI inside VS Code. Answer concisely, propose code edits with clear steps.\n\n" +
-            "If you want to run terminal commands, put ONLY the exact commands (one per line) inside a fenced code block labeled sh (```sh ... ```). " +
-            "Do not prefix commands with '+', '-', bullets, or commentary.\n\n" +
-            "If you propose file edits, include a unified diff inside a fenced code block labeled diff (```diff ... ```), " +
-            "with file paths relative to the workspace root. For new files use --- /dev/null and +++ b/<path>. For deletes use +++ /dev/null.\n\n" +
-            "Context:\n" +
-            maskedCtx +
-            (tagged.length ? "\n\nTagged files (@):\n" + tagged.join("\n") : "") +
-            (atts.length
-              ? "\n\nAttachments (uploaded):\n" +
-                atts
-                  .map((a) => `--- ${a.name} ---\n${a.text}`)
-                  .join("\n\n")
-              : "") +
-            "\n\nUser question:\n" +
-            maskedQuestion;
+            `You are Safegraph AI, an intelligent VS Code assistant. You provide expert help with:
+- Code analysis, refactoring, and best practices
+- Bug fixing and debugging
+- Feature implementation and architecture design
+- Testing, documentation, and code quality
+- Terminal commands and build systems
+
+RESPONSE GUIDELINES:
+1. Reply in the same language as the user. If the user writes Vietnamese, use clear Vietnamese.
+2. Write for a normal developer using VS Code, not for a framework expert. Avoid academic headings like "Issue Analysis" unless the user asks for a report.
+3. Start with the fix or next action. Then give a short reason only if it helps the user make the right choice.
+4. Prefer concrete steps: what file to open, what command to run, what URL to visit, or what button to click.
+5. When explaining an error, use this shape: "Lỗi là...", "Cách sửa...", "Vì sao...". Keep each part short.
+6. For code changes, file creation, folder structure changes, or content edits, ALWAYS provide a complete unified diff in a fenced code block marked 'diff'. Safegraph applies diff blocks automatically in Agent Mode.
+7. Do NOT create or edit project files with terminal heredocs or shell text-writing commands such as cat > file <<EOF, echo > file, tee, printf > file, or touch. Use a diff block instead.
+8. For terminal commands, include only commands used to install dependencies, run apps, run tests, or inspect the project. Put ONLY exact commands (one per line) in a fenced code block marked 'sh'.
+9. Use the file paths relative to workspace root.
+10. For new files: use --- /dev/null and +++ b/<path>.
+11. For deleted files: use --- a/<path> and +++ /dev/null.
+12. Do not dump long explanations when a simple action is enough.
+13. Current terminal setting: safegraph.autoRun=${autoRunMode}. In "safe" mode, allowlisted commands run automatically and other commands trigger a VS Code confirmation dialog. In "ask" mode, every command asks. In "off" mode, no command runs automatically.
+14. For Python virtualenv workflows, prefer commands that do not require persistent shell activation, for example: python3.12 -m venv venv, venv/bin/python -m pip install ..., venv/bin/python app.py, venv/bin/python -m streamlit run app.py.
+${msg.agentMode ? `15. AGENT MODE IS ON. Do not only give instructions. If the task requires creating app.py, templates, static files, config files, or any project structure, output the actual unified diff so Safegraph can apply it. After the diff, provide only safe verification/run commands that Safegraph can execute or ask permission for.` : ""}
+
+CONTEXT:
+${maskedCtx}
+${conversation ? "\nRecent conversation:\n" + conversation : ""}
+${tagged.length ? "\nTagged files (@):\n" + tagged.join("\n") : ""}
+${atts.length ? "\nAttachments:\n" + atts.map((a) => `[${a.name}] ${a.text}`).join("\n\n") : ""}
+
+User query:
+${maskedQuestion}`;
 
           const thinking: ExtensionToWebviewMessage = {
             type: "assistantMessage",
@@ -242,6 +328,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             done: true
           };
           webviewView.webview.postMessage(reply);
+          this.history.push({ role: "user", text: msg.text });
+          this.history.push({ role: "assistant", text: acc });
+          if (this.history.length > 16) {
+            this.history = this.history.slice(-16);
+          }
+
+          if (msg.agentMode) {
+            const diffs = extractDiffBlocks(acc);
+            if (diffs.length > 0) {
+              try {
+                await applyUnifiedDiffToWorkspaceSmart(diffs.join("\n\n"), this.output);
+                webviewView.webview.postMessage({
+                  type: "assistantMessage",
+                  id: `${msg.id}-agent-apply`,
+                  text: "Agent: đã apply diff vào workspace.",
+                  ts: Date.now(),
+                  done: true
+                } satisfies ExtensionToWebviewMessage);
+              } catch (e) {
+                const formatted = formatApplyError(e);
+                this.output.appendLine(`[safegraph-ai] agent apply failed: ${formatted}`);
+                webviewView.webview.postMessage({
+                  type: "error",
+                  message: formatted,
+                  ts: Date.now()
+                });
+              }
+            } else if (hasShellFileWrite(acc)) {
+              webviewView.webview.postMessage({
+                type: "error",
+                message:
+                  "Agent cần tạo/sửa file bằng diff để Safegraph tự apply. AI vừa trả về lệnh ghi file bằng terminal, nên extension đã không tự chạy. Hãy gửi lại yêu cầu hoặc bật Agent và yêu cầu tạo unified diff.",
+                ts: Date.now()
+              });
+            }
+          }
 
           // Cursor-like behavior: propose terminal commands in UI (no terminal panel pop).
           if (!this.autoRunDoneFor.has(msg.id)) {
@@ -251,6 +373,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const proposed = this.cmdRunner.proposeFromAssistantText(acc, mode);
             if (proposed.length) {
               webviewView.webview.postMessage({ type: "commandProposed", items: proposed, ts: Date.now() });
+              const folders = vscode.workspace.workspaceFolders;
+              const cwd = folders?.[0]?.uri.fsPath || process.cwd();
+              for (const item of proposed) {
+                if (item.decision === "allow") {
+                  this.cmdRunner.run(item.id, item.cmd, cwd, (m) => webviewView.webview.postMessage(m));
+                } else if (item.decision === "ask") {
+                  const ok = await vscode.window.showWarningMessage(
+                    `Safegraph AI muốn chạy command:\n\n${item.cmd}\n\nLý do: ${item.reason}`,
+                    { modal: true },
+                    "Run"
+                  );
+                  if (ok === "Run") {
+                    this.cmdRunner.run(item.id, item.cmd, cwd, (m) => webviewView.webview.postMessage(m));
+                  } else {
+                    webviewView.webview.postMessage({
+                      type: "commandUpdate",
+                      id: item.id,
+                      status: "denied",
+                      output: "Command skipped by user.",
+                      ts: Date.now()
+                    } satisfies ExtensionToWebviewMessage);
+                  }
+                }
+              }
             }
           }
         } catch (e) {

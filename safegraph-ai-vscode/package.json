@@ -1,14 +1,26 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI",
+  "displayName": "Safegraph AI v0.1.2",
   "description": "MVP sidebar AI chat with local code-graph context and Bedrock integration.",
-  "version": "0.0.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
+  },
+  "version": "0.1.2",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["Other"],
-  "activationEvents": ["onStartupFinished", "onView:safegraph.chatView", "onCommand:safegraph.openChat", "onCommand:safegraph.setBedrockApiKey", "onCommand:safegraph.moveChatRight"],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:safegraph.chatView",
+    "onCommand:safegraph.openChat",
+    "onCommand:safegraph.setBedrockApiKey",
+    "onCommand:safegraph.moveChatRight"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -26,13 +38,22 @@
       }
     ],
     "configuration": {
-      "title": "Safegraph AI",
+      "title": "Safegraph AI v0.1.2",
       "properties": {
         "safegraph.autoRun": {
           "type": "string",
-          "enum": ["off", "safe", "ask"],
+          "enum": [
+            "off",
+            "safe",
+            "ask"
+          ],
           "default": "safe",
           "description": "Auto-run commands in VS Code Terminal. 'safe' runs allowlisted commands automatically and asks for the rest."
+        },
+        "safegraph.agentModeDefault": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start Safegraph chat with Agent Mode enabled. Agent Mode applies diff blocks and runs safe verification commands automatically."
         },
         "safegraph.region": {
           "type": "string",
@@ -50,7 +71,7 @@
       "activitybar": [
         {
           "id": "safegraph",
-          "title": "Safegraph AI",
+          "title": "Safegraph AI v0.1.2",
           "icon": "media/icon.svg"
         }
       ]
@@ -66,8 +87,10 @@
     }
   },
   "scripts": {
-    "build": "tsc -p .",
-    "watch": "tsc -p . -w"
+    "build": "node scripts/bump-version.js && tsc -p .",
+    "watch": "tsc -p . -w",
+    "bump": "node scripts/bump-version.js",
+    "package": "npm run build && node scripts/package-vsix.js"
   },
   "devDependencies": {
     "@types/node": "^20.12.12",

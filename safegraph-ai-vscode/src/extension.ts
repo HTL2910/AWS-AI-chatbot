@@ -3,8 +3,18 @@ import { ChatViewProvider } from "./chat/ChatViewProvider";
 
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel("Safegraph AI");
-  output.appendLine("[safegraph-ai] Start window");
-  output.appendLine("[safegraph-ai] activate");
+  
+  // Read and display version
+  try {
+    const pkgPath = vscode.Uri.joinPath(context.extensionUri, "package.json");
+    const pkgBytes = require("fs").readFileSync(pkgPath.fsPath, "utf8");
+    const pkg = JSON.parse(pkgBytes);
+    output.appendLine(`[safegraph-ai] Version ${pkg.version}`);
+  } catch {
+    output.appendLine("[safegraph-ai] Version: unknown");
+  }
+  
+  output.appendLine("[safegraph-ai] Activate");
   context.subscriptions.push(output);
 
   try {

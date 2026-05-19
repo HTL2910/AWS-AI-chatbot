@@ -5,6 +5,8 @@
   const formEl = document.getElementById("composer");
   const inputEl = document.getElementById("input");
   const sendEl = document.getElementById("send");
+  const newChatEl = document.getElementById("newChat");
+  const agentModeEl = document.getElementById("agentMode");
   const attachFileEl = document.getElementById("attachFile");
   const fileInputEl = document.getElementById("fileInput");
   const mentionEl = document.getElementById("mention");
@@ -14,6 +16,7 @@
   const taggedFiles = new Map(); // path -> label
   const attachments = new Map(); // id -> { id, name, text, size, mime }
   let currentMessageId = null; // track current streaming message
+  let agentMode = document.body?.dataset?.agentDefault !== "false";
   const taggedFilesEl = document.createElement("div");
   taggedFilesEl.className = "taggedFilesList";
   taggedFilesEl.hidden = true;
@@ -25,6 +28,39 @@
   formEl.parentElement.insertBefore(attachmentsEl, taggedFilesEl);
 
   const rootEl = document.querySelector(".root");
+
+  function clearChat() {
+    messagesEl.innerHTML = "";
+    assistantById.clear();
+    assistantState.clear();
+    currentMessageId = null;
+    sendEl.textContent = "Send";
+    vscode.postMessage({ type: "clearChat" });
+  }
+
+  if (newChatEl) {
+    newChatEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      clearChat();
+      inputEl.focus();
+    });
+  }
+
+  function renderAgentMode() {
+    if (!agentModeEl) return;
+    agentModeEl.textContent = agentMode ? "Agent On" : "Agent Off";
+    agentModeEl.classList.toggle("active", agentMode);
+  }
+
+  if (agentModeEl) {
+    agentModeEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      agentMode = !agentMode;
+      renderAgentMode();
+      inputEl.focus();
+    });
+    renderAgentMode();
+  }
 
   function appendMessage(role, text) {
     const row = document.createElement("div");
@@ -83,10 +119,22 @@
   }
 
   function splitUnifiedDiffByFile(diffBody) {
-    // Very small splitter: groups by ---/+++ headers.
     const lines = String(diffBody || "").replace(/\r\n/g, "\n").split("\n");
     const chunks = [];
     let cur = [];
+
+    if (lines.some((l) => l.startsWith("diff --git "))) {
+      for (const l of lines) {
+        if (l.startsWith("diff --git ") && cur.length > 0) {
+          chunks.push(cur.join("\n"));
+          cur = [];
+        }
+        cur.push(l);
+      }
+      if (cur.length) chunks.push(cur.join("\n"));
+      return chunks.map((c) => c.trim()).filter(Boolean);
+    }
+
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i];
       if (l.startsWith("--- ") && cur.length > 0) {
@@ -246,12 +294,15 @@
     // Diff previews (per-file) only on done=true.
     if (typeof text === "string" && text.includes("```diff")) {
       const re = /```diff\s*([\s\S]*?)```/gi;
+      const diffBodies = [];
       for (const m of text.matchAll(re)) {
         const diffBody = String(m[1] || "").trim();
-        if (!diffBody) continue;
+        if (diffBody) diffBodies.push(diffBody);
+      }
+      if (diffBodies.length > 0) {
         const container = document.createElement("div");
         container.className = "diffBlock";
-        renderDiffPreview(container, diffBody);
+        renderDiffPreview(container, diffBodies.join("\n\n"));
         el.appendChild(container);
       }
     }
@@ -698,6 +749,7 @@
       id,
       text,
       ts: Date.now(),
+      agentMode,
       taggedFiles: Array.from(taggedFiles.keys()),
       attachments: Array.from(attachments.values()).map((a) => ({ name: a.name, text: a.text }))
     });
@@ -715,7 +767,13 @@
     if (!Array.isArray(items) || items.length === 0) return;
     cmdPanel.hidden = false;
     for (const it of items) {
-      cmdState.set(it.id, { cmd: it.cmd, status: it.decision === "deny" ? "denied" : "queued", output: "" });
+      cmdState.set(it.id, {
+        cmd: it.cmd,
+        status: it.decision === "deny" ? "denied" : "queued",
+        decision: it.decision,
+        reason: it.reason || "",
+        output: ""
+      });
     }
     redrawCommands(items.map((it) => it.id));
   }
@@ -736,7 +794,8 @@
 
       const cmd = document.createElement("div");
       cmd.className = "cmdText";
-      cmd.textContent = st.cmd;
+      cmd.textContent = `${st.cmd}${st.decision === "allow" ? "  [auto]" : st.decision === "ask" ? "  [needs approval]" : ""}`;
+      if (st.reason) cmd.title = st.reason;
 
       const actions = document.createElement("div");
       actions.className = "cmdActions";
@@ -749,7 +808,7 @@
       run.type = "button";
       run.className = "applyBtn";
       run.textContent = "Run";
-      run.disabled = st.status !== "queued";
+      run.disabled = st.status !== "queued" || st.decision === "allow" || st.decision === "deny";
       run.addEventListener("click", () => {
         vscode.postMessage({ type: "runCommand", id, cmd: st.cmd });
         st.status = "running";

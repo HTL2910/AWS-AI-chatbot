@@ -15,69 +15,84 @@ type FilePatch = {
 
 function sanitizeDiffText(diffText: string) {
   // Cursor-like tolerance: models sometimes include commentary lines inside ```diff``` blocks.
-  // We keep only lines that look like unified diff metadata or hunk body.
+  // We keep only valid unified diff metadata and hunk lines.
   const out: string[] = [];
   const lines = diffText.replace(/\r\n/g, "\n").split("\n");
   let inHunk = false;
-  for (const line of lines) {
-    if (
+
+  const isFileHeaderAt = (idx: number) => lines[idx]?.startsWith("--- ") && lines[idx + 1]?.startsWith("+++ ");
+
+  for (let idx = 0; idx < lines.length; idx++) {
+    const line = lines[idx];
+    const isMetadata =
       line.startsWith("diff --git ") ||
       line.startsWith("index ") ||
       line.startsWith("new file mode ") ||
       line.startsWith("deleted file mode ") ||
       line.startsWith("similarity index ") ||
       line.startsWith("rename from ") ||
-      line.startsWith("rename to ")
-    ) {
+      line.startsWith("rename to ") ||
+      line.startsWith("--- ") ||
+      line.startsWith("+++ ");
+
+    if (inHunk && !line.startsWith("diff --git ") && !isFileHeaderAt(idx)) {
+      if (line === "") {
+        out.push(" ");
+      } else if (
+        line.startsWith("+") ||
+        line.startsWith("-") ||
+        line.startsWith(" ") ||
+        line.startsWith("\\ No newline at end of file")
+      ) {
+        out.push(line);
+      } else {
+        out.push(" " + line);
+      }
+      continue;
+    }
+
+    if (isMetadata) {
       inHunk = false;
       out.push(line);
       continue;
     }
-    if (
-      line.startsWith("--- ") ||
-      line.startsWith("+++ ") ||
-      line.startsWith("@@ ") ||
-      line.startsWith("+") ||
-      line.startsWith("-") ||
-      line.startsWith(" ") ||
-      line.startsWith("\\ No newline at end of file") ||
-      line.trim() === ""
-    ) {
-      if (line.startsWith("@@ ")) inHunk = true;
-      if (line.startsWith("--- ") || line.startsWith("+++ ")) inHunk = false;
+
+    if (line.startsWith("@@ ")) {
+      inHunk = true;
       out.push(line);
       continue;
     }
-    // If we're inside a hunk, coerce stray lines into context so git doesn't see a corrupt patch.
-    // This makes the patch parseable; apply may still fail if the content doesn't match.
-    if (inHunk) {
-      out.push(" " + line);
+
+    if (line.trim() === "") {
+      out.push(line);
       continue;
     }
-    // Otherwise drop (e.g. "# Analysis", markdown bullets)
+
+    // Drop stray lines outside of diff metadata and hunks.
   }
-  // Fix common model bug: blank lines inside hunks without a prefix break git apply.
-  // Convert empty lines that are within a hunk to context " ".
+
+  // Normalize blank lines inside hunks so git does not reject them.
   const fixed: string[] = [];
   inHunk = false;
-  for (const l of out) {
+  for (let i = 0; i < out.length; i++) {
+    const l = out[i];
     if (l.startsWith("@@ ")) inHunk = true;
-    if (l.startsWith("--- ") || l.startsWith("+++ ") || l.startsWith("diff --git ")) inHunk = false;
+    if (l.startsWith("diff --git ") || (l.startsWith("--- ") && out[i + 1]?.startsWith("+++ "))) inHunk = false;
     if (inHunk && l === "") fixed.push(" ");
     else fixed.push(l);
   }
 
-  // Final normalize: inside a hunk, every line must start with ' ', '+', '-', or '\'.
-  // If not, coerce to context to avoid "corrupt patch" errors.
+  // Ensure hunk body lines are valid patch lines.
   const normalized: string[] = [];
   inHunk = false;
-  for (const l of fixed) {
+  for (let i = 0; i < fixed.length; i++) {
+    const l = fixed[i];
     if (l.startsWith("@@ ")) {
       inHunk = true;
       normalized.push(l);
       continue;
     }
-    if (l.startsWith("--- ") || l.startsWith("+++ ") || l.startsWith("diff --git ")) {
+    if (l.startsWith("diff --git ") || (l.startsWith("--- ") && fixed[i + 1]?.startsWith("+++ "))) {
       inHunk = false;
       normalized.push(l);
       continue;
@@ -88,6 +103,7 @@ function sanitizeDiffText(diffText: string) {
     }
     normalized.push(l);
   }
+
   return normalized.join("\n");
 }
 
@@ -117,8 +133,54 @@ function parseHunkHeader(line: string) {
   };
 }
 
+function normalizeHunkHeaders(diffText: string) {
+  const lines = diffText.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const hh = parseHunkHeader(line);
+    if (!hh) {
+      out.push(line);
+      continue;
+    }
+
+    const body: string[] = [];
+    let j = i + 1;
+    while (j < lines.length) {
+      const next = lines[j];
+      const startsNextFile = next.startsWith("diff --git ") || (next.startsWith("--- ") && lines[j + 1]?.startsWith("+++ "));
+      if (next.startsWith("@@ ") || startsNextFile) break;
+      body.push(next);
+      j++;
+    }
+
+    let oldLines = 0;
+    let newLines = 0;
+    for (const bodyLine of body) {
+      if (bodyLine.startsWith("\\ No newline at end of file")) continue;
+      const marker = bodyLine.slice(0, 1);
+      if (marker === " ") {
+        oldLines++;
+        newLines++;
+      } else if (marker === "-") {
+        oldLines++;
+      } else if (marker === "+") {
+        newLines++;
+      }
+    }
+
+    const suffix = /^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@(.*)$/.exec(line)?.[1] ?? "";
+    out.push(`@@ -${hh.oldStart},${oldLines} +${hh.newStart},${newLines} @@${suffix}`);
+    out.push(...body);
+    i = j - 1;
+  }
+
+  return out.join("\n");
+}
+
 export function parseUnifiedDiff(diffText: string): FilePatch[] {
-  const cleaned = sanitizeDiffText(diffText);
+  const cleaned = normalizeHunkHeaders(sanitizeDiffText(diffText));
   const lines = cleaned.replace(/\r\n/g, "\n").split("\n");
   const patches: FilePatch[] = [];
 
@@ -152,9 +214,55 @@ export function parseUnifiedDiff(diffText: string): FilePatch[] {
     i++;
 
     const hunks: Hunk[] = [];
+    
+    // For new files with no hunks, collect all lines as add lines
+    if (kind === "create") {
+      const addLines: HunkLine[] = [];
+      while (i < lines.length) {
+        const line = lines[i];
+        if (line.startsWith("--- ") || line.startsWith("diff --git ")) break;
+        if (line.startsWith("@@ ")) {
+          // If we hit a hunk marker, process normally below
+          break;
+        }
+        if (line.startsWith("+") && !line.startsWith("+++")) {
+          addLines.push({ kind: "add", text: line.slice(1) });
+          i++;
+          continue;
+        }
+        if (line.startsWith(" ")) {
+          addLines.push({ kind: "context", text: line.slice(1) });
+          i++;
+          continue;
+        }
+        if (line.startsWith("-") && !line.startsWith("---")) {
+          // For new files, deletes don't make sense, but allow context
+          i++;
+          continue;
+        }
+        if (line.startsWith("\\ No newline at end of file")) {
+          i++;
+          continue;
+        }
+        // Skip other lines
+        i++;
+      }
+      // If we collected add lines and no hunks yet, treat as a single hunk
+      if (addLines.length > 0 && !lines[i]?.startsWith("@@ ")) {
+        hunks.push({
+          oldStart: 1,
+          oldLines: 0,
+          newStart: 1,
+          newLines: addLines.length,
+          lines: addLines
+        });
+      }
+    }
+    
+    // Process hunks if present
     while (i < lines.length) {
       const line = lines[i];
-      if (line.startsWith("--- ")) break;
+      if (line.startsWith("diff --git ") || (line.startsWith("--- ") && lines[i + 1]?.startsWith("+++ "))) break;
       if (!line.startsWith("@@ ")) {
         i++;
         continue;
@@ -165,14 +273,13 @@ export function parseUnifiedDiff(diffText: string): FilePatch[] {
       const hunkLines: HunkLine[] = [];
       while (i < lines.length) {
         const hl = lines[i];
-        if (hl.startsWith("@@ ") || hl.startsWith("--- ")) break;
+        const startsNextFile = hl.startsWith("diff --git ") || (hl.startsWith("--- ") && lines[i + 1]?.startsWith("+++ "));
+        if (hl.startsWith("@@ ") || startsNextFile) break;
         if (hl.startsWith("\\ No newline at end of file")) {
           i++;
           continue;
         }
         if (hl.trim() === "") {
-          // Empty lines inside hunks are represented as " " (context) in strict diffs,
-          // but some generators emit blank. Treat as context blank.
           hunkLines.push({ kind: "context", text: "" });
           i++;
           continue;
@@ -183,7 +290,6 @@ export function parseUnifiedDiff(diffText: string): FilePatch[] {
         else if (ch === "+") hunkLines.push({ kind: "add", text: txt });
         else if (ch === "-") hunkLines.push({ kind: "del", text: txt });
         else {
-          // Tolerate stray lines; sanitized diffs should have removed most of these.
           i++;
           continue;
         }
@@ -192,7 +298,9 @@ export function parseUnifiedDiff(diffText: string): FilePatch[] {
       hunks.push({ ...hh, lines: hunkLines });
     }
 
-    patches.push({ filePath, oldPath, newPath, kind, hunks });
+    if (hunks.length > 0 || kind === "create") {
+      patches.push({ filePath, oldPath, newPath, kind, hunks });
+    }
   }
 
   if (patches.length === 0) throw new Error("No file patches found in diff.");
@@ -328,10 +436,10 @@ export async function applyUnifiedDiffToWorkspace(diffText: string) {
   if (!ok) throw new Error("VS Code rejected the workspace edit.");
 }
 
-async function runGitApply3Way(rootFsPath: string, diffText: string) {
+async function runGitApply3Way(rootFsPath: string, diffText: string, output?: vscode.OutputChannel) {
   const tmpDir = os.tmpdir();
   const patchPath = path.join(tmpDir, `safegraph-ai-${Date.now()}.patch`);
-  const cleaned = sanitizeDiffText(diffText);
+  const cleaned = normalizeHunkHeaders(sanitizeDiffText(diffText));
   await vscode.workspace.fs.writeFile(vscode.Uri.file(patchPath), Buffer.from(cleaned, "utf8"));
 
   const run = (args: string[]) =>
@@ -344,6 +452,9 @@ async function runGitApply3Way(rootFsPath: string, diffText: string) {
       p.on("error", () => resolve({ code: -1, out: "git not available" }));
     });
 
+  const fallbackToDirectApply = (msg: string) =>
+    /repository lacks the necessary blob/i.test(msg) || /unable to find (?:object|blob)/i.test(msg);
+
   // Ensure repo
   const isRepo = await run(["rev-parse", "--is-inside-work-tree"]);
   if (isRepo.code !== 0) throw new Error("git fallback unavailable: not a git repo");
@@ -351,11 +462,38 @@ async function runGitApply3Way(rootFsPath: string, diffText: string) {
   // Dry-run check first
   const check = await run(["apply", "--3way", "--check", patchPath]);
   if (check.code !== 0) {
-    throw new Error(`git apply --3way --check failed: ${check.out.trim()}`);
+    const msg = check.out.trim();
+    if (fallbackToDirectApply(msg)) {
+      const directCheck = await run(["apply", "--check", patchPath]);
+      if (directCheck.code !== 0) {
+        throw new Error(
+          `git apply --3way --check failed: ${msg}\ngit apply --check failed: ${directCheck.out.trim()}`
+        );
+      }
+      output?.appendLine("[safegraph-ai] git apply --3way unavailable; using direct git apply fallback");
+      const directApply = await run(["apply", patchPath]);
+      if (directApply.code !== 0) {
+        throw new Error(`git apply failed: ${directApply.out.trim()}`);
+      }
+      output?.appendLine("[safegraph-ai] git apply direct fallback succeeded");
+      return;
+    }
+    throw new Error(`git apply --3way --check failed: ${msg}`);
   }
+
   const apply = await run(["apply", "--3way", patchPath]);
   if (apply.code !== 0) {
-    throw new Error(`git apply --3way failed: ${apply.out.trim()}`);
+    const msg = apply.out.trim();
+    if (fallbackToDirectApply(msg)) {
+      output?.appendLine("[safegraph-ai] git apply --3way failed; using direct git apply fallback");
+      const directApply = await run(["apply", patchPath]);
+      if (directApply.code !== 0) {
+        throw new Error(`git apply failed: ${directApply.out.trim()}`);
+      }
+      output?.appendLine("[safegraph-ai] git apply direct fallback succeeded");
+      return;
+    }
+    throw new Error(`git apply --3way failed: ${msg}`);
   }
 }
 
@@ -372,7 +510,7 @@ export async function applyUnifiedDiffToWorkspaceSmart(diffText: string, output?
     const rootFsPath = folders?.[0]?.uri.fsPath;
     if (!rootFsPath) throw e;
     output?.appendLine(`[safegraph-ai] apply fuzzy failed (${msg}); trying git apply --3way fallback`);
-    await runGitApply3Way(rootFsPath, diffText);
+    await runGitApply3Way(rootFsPath, diffText, output);
     output?.appendLine("[safegraph-ai] git apply --3way succeeded");
   }
 }
