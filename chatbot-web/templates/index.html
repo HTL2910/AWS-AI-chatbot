@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -14,22 +14,17 @@
         </div>
         
         <div class="chat-box" id="chatBox">
-            <div class="welcome-message">
-                <h2>Welcome to AWS Bedrock Chatbot</h2>
-                <p>Start typing your message below...</p>
-            </div>
+            <div class="message system">Welcome! Ask me anything.</div>
         </div>
         
         <div class="input-area">
-            <form id="chatForm">
-                <input 
-                    type="text" 
-                    id="messageInput" 
-                    placeholder="Type your message here..."
-                    autocomplete="off"
-                >
-                <button type="submit" id="sendBtn">Send</button>
-            </form>
+            <input 
+                type="text" 
+                id="messageInput" 
+                placeholder="Type your message..." 
+                autocomplete="off"
+            >
+            <button id="sendBtn" class="send-btn">Send</button>
         </div>
     </div>
     
