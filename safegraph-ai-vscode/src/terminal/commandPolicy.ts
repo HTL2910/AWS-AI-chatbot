@@ -50,7 +50,6 @@ const SAFE_PREFIXES = [
   /^grep\b/i,
   /^echo\s+/i,
   /^mkdir\s+-p\s+[\w./\-]+/i,
-  /^touch\s+[\w./\-]+/i,
   /^make\b/i,
   /^docker\s+(build|run|ps|logs|exec)\b/i,
   /^curl\s+(https?:\/\/|--version|--help)\b/i,
@@ -68,6 +67,19 @@ function hasRedirection(cmd: string) {
   return /[<>]/.test(cmd) && !cmd.match(/https?:\/\//);
 }
 
+function isSafeReadOnlyPipeline(cmd: string) {
+  if (!cmd.includes("|")) return false;
+  if (/[;&`$(){}[\]<>]/.test(cmd)) return false;
+
+  const parts = cmd.split("|").map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return false;
+
+  const readOnlyPart = /^(rg|grep|find|ls|pwd|cat|head|tail|wc)\b/i;
+  const firstCanScan = /^(rg|grep|find|ls|pwd|cat)\b/i;
+  if (!firstCanScan.test(parts[0])) return false;
+  return parts.every((part) => readOnlyPart.test(part));
+}
+
 export function decideCommand(cmd: string, mode: AutoRunMode): CommandDecision {
   const trimmed = cmd.trim();
   
@@ -76,6 +88,14 @@ export function decideCommand(cmd: string, mode: AutoRunMode): CommandDecision {
   }
 
   // Check for shell operators (but allow URLs)
+  if (isSafeReadOnlyPipeline(trimmed)) {
+    return mode === "safe"
+      ? { decision: "allow", reason: "safe read-only inspection pipeline" }
+      : mode === "ask"
+        ? { decision: "ask", reason: "auto-run in ask mode" }
+        : { decision: "deny", reason: "auto-run disabled" };
+  }
+
   if (hasShellChaining(trimmed)) {
     return { decision: "ask", reason: "shell operators detected (;, &&, ||, |, backticks, $(), etc.)" };
   }

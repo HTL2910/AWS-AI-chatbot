@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat/ChatViewProvider";
-import { loadBedrockApiKeyInfos, maskApiKey } from "./config/env";
+import { runInlineEdit } from "./inline/inlineEdit";
 
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel("Safegraph AI");
@@ -55,34 +55,18 @@ export function activate(context: vscode.ExtensionContext) {
     const checkBedrockApiKeyCommand = vscode.commands.registerCommand(
       "safegraph.checkBedrockApiKey",
       async () => {
-        const infos = await loadBedrockApiKeyInfos([context.extensionUri.fsPath]);
-        const secret = await context.secrets.get("safegraph.bedrockApiKey");
-        if (secret) {
-          infos.push({
-            value: secret,
-            keyName: "safegraph.bedrockApiKey",
-            source: "VS Code SecretStorage"
-          });
+        try {
+          await provider.checkApiKeyStatus();
+        } catch (error) {
+          output.appendLine(`[safegraph-ai] checkBedrockApiKey failed: ${String(error)}`);
+          vscode.window.showErrorMessage(`Safegraph AI key check failed: ${String(error)}`);
         }
-
-        if (infos.length > 0) {
-          const message = `Safegraph AI: found ${infos.length} key source(s): ${infos
-            .map((info) => `${info.keyName} from ${info.source} (${maskApiKey(info.value)})`)
-            .join("; ")}.`;
-          output.appendLine(`[safegraph-ai] ${message}`);
-          vscode.window.showInformationMessage(message);
-          return;
-        }
-
-        vscode.window.showWarningMessage(
-          "Safegraph AI: no Bedrock API key found. Add AWS_BEARER_TOKEN_BEDROCK or API_KEY to workspace .env."
-        );
       }
     );
     context.subscriptions.push(checkBedrockApiKeyCommand);
 
-    const openLogCommand = vscode.commands.registerCommand("safegraph.openLog", async () => {
-      output.show(true);
+    const openLogCommand = vscode.commands.registerCommand("safegraph.openLog", () => {
+      provider.openLog();
     });
     context.subscriptions.push(openLogCommand);
 
@@ -114,12 +98,23 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(moveChatRightCommand);
 
+    const inlineEditCommand = vscode.commands.registerCommand("safegraph.inlineEdit", async () => {
+      try {
+        await runInlineEdit(context, output);
+      } catch (error) {
+        output.appendLine(`[safegraph-ai] inlineEdit failed: ${String(error)}`);
+        vscode.window.showErrorMessage(`Safegraph AI Inline Edit failed: ${String(error)}`);
+      }
+    });
+    context.subscriptions.push(inlineEditCommand);
+
     output.appendLine(`[safegraph-ai] registered webview provider: ${ChatViewProvider.viewType}`);
     output.appendLine("[safegraph-ai] registered command: safegraph.openChat");
     output.appendLine("[safegraph-ai] registered command: safegraph.setBedrockApiKey");
     output.appendLine("[safegraph-ai] registered command: safegraph.checkBedrockApiKey");
     output.appendLine("[safegraph-ai] registered command: safegraph.openLog");
     output.appendLine("[safegraph-ai] registered command: safegraph.moveChatRight");
+    output.appendLine("[safegraph-ai] registered command: safegraph.inlineEdit");
   } catch (e) {
     output.appendLine(`[safegraph-ai] activate failed: ${String(e)}`);
     vscode.window.showErrorMessage(`Safegraph AI failed to activate: ${String(e)}`);

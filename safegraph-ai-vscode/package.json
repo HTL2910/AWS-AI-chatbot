@@ -1,12 +1,12 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.3.2",
+  "displayName": "Safegraph AI v0.5.7",
   "description": "MVP sidebar AI chat with local code-graph context and Bedrock integration.",
   "repository": {
     "type": "git",
     "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
   },
-  "version": "0.3.2",
+  "version": "0.5.7",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
@@ -21,7 +21,8 @@
     "onCommand:safegraph.setBedrockApiKey",
     "onCommand:safegraph.checkBedrockApiKey",
     "onCommand:safegraph.openLog",
-    "onCommand:safegraph.moveChatRight"
+    "onCommand:safegraph.moveChatRight",
+    "onCommand:safegraph.inlineEdit"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -45,10 +46,22 @@
       {
         "command": "safegraph.openChat",
         "title": "Safegraph AI: Open Chat"
+      },
+      {
+        "command": "safegraph.inlineEdit",
+        "title": "Safegraph AI: Inline Edit"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "safegraph.inlineEdit",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "editorTextFocus && !editorReadonly"
       }
     ],
     "configuration": {
-      "title": "Safegraph AI v0.3.2",
+      "title": "Safegraph AI v0.5.7",
       "properties": {
         "safegraph.autoRun": {
           "type": "string",
@@ -60,11 +73,6 @@
           "default": "safe",
           "description": "Auto-run commands in VS Code Terminal. 'safe' runs allowlisted commands automatically and asks for the rest."
         },
-        "safegraph.agentModeDefault": {
-          "type": "boolean",
-          "default": true,
-          "description": "Start Safegraph chat with Agent Mode enabled. Agent Mode applies diff blocks and runs safe verification commands automatically."
-        },
         "safegraph.region": {
           "type": "string",
           "default": "ap-southeast-1",
@@ -74,6 +82,39 @@
           "type": "string",
           "default": "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623",
           "description": "Bedrock model identifier or inference profile ARN."
+        },
+        "safegraph.repositoryRag.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include local repository RAG context for each chat request."
+        },
+        "safegraph.repositoryRag.maxFiles": {
+          "type": "number",
+          "default": 800,
+          "minimum": 50,
+          "maximum": 5000,
+          "description": "Maximum source files to index for local repository RAG."
+        },
+        "safegraph.repositoryRag.maxChunks": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 40,
+          "description": "Maximum retrieved repository chunks included in each prompt."
+        },
+        "safegraph.repositoryRag.maxChars": {
+          "type": "number",
+          "default": 18000,
+          "minimum": 2000,
+          "maximum": 80000,
+          "description": "Maximum characters of repository RAG context included in each prompt."
+        },
+        "safegraph.agent.maxFixLoops": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Maximum autonomous edit-test-fix loops after Safegraph applies a diff. Only safe allowlisted commands auto-run."
         }
       }
     },
@@ -81,7 +122,7 @@
       "activitybar": [
         {
           "id": "safegraph",
-          "title": "Safegraph AI v0.3.2",
+          "title": "Safegraph AI v0.5.7",
           "icon": "media/icon.svg"
         }
       ]
@@ -97,14 +138,16 @@
     }
   },
   "scripts": {
-    "build": "node scripts/bump-version.js && tsc -p .",
+    "build": "tsc -p .",
     "watch": "tsc -p . -w",
     "bump": "node scripts/bump-version.js",
     "package": "npm run build && node scripts/package-vsix.js"
   },
+  "dependencies": {
+    "typescript": "^5.5.4"
+  },
   "devDependencies": {
     "@types/node": "^20.12.12",
-    "@types/vscode": "^1.90.0",
-    "typescript": "^5.5.4"
+    "@types/vscode": "^1.90.0"
   }
 }

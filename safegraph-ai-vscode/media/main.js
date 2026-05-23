@@ -6,6 +6,9 @@
   const inputEl = document.getElementById("input");
   const sendEl = document.getElementById("send");
   const newChatEl = document.getElementById("newChat");
+  const statusBadgeEl = document.getElementById("statusBadge");
+  const emptyStateEl = document.getElementById("emptyState");
+  const composerMetaEl = document.getElementById("composerMeta");
   const agentModeEl = document.getElementById("agentMode");
   const setKeyEl = document.getElementById("setKey");
   const checkKeyEl = document.getElementById("checkKey");
@@ -15,6 +18,7 @@
   const addSelectionEl = document.getElementById("addSelection");
   const reviewWorkspaceEl = document.getElementById("reviewWorkspace");
   const fixDiagnosticsEl = document.getElementById("fixDiagnostics");
+  const designMockupEl = document.getElementById("designMockup");
   const fileInputEl = document.getElementById("fileInput");
   const mentionEl = document.getElementById("mention");
 
@@ -40,10 +44,37 @@
 
   const rootEl = document.querySelector(".root");
 
+  function setStatus(text, tone) {
+    if (!statusBadgeEl) return;
+    statusBadgeEl.textContent = text;
+    statusBadgeEl.dataset.tone = tone || "idle";
+  }
+
+  function updateEmptyState() {
+    if (!emptyStateEl) return;
+    const hasMessages = messagesEl.querySelector(".msg, .cmdPanel");
+    emptyStateEl.hidden = !!hasMessages;
+  }
+
+  function updateComposerMeta() {
+    if (!composerMetaEl) return;
+    const contextCount = taggedFiles.size + attachments.size;
+    const parts = [agentMode ? "Agent on" : "Agent off"];
+    if (contextCount) {
+      parts.push(`${contextCount} context item${contextCount === 1 ? "" : "s"}`);
+    } else {
+      parts.push("no context attached");
+    }
+    if (currentMessageId) parts.push("running");
+    composerMetaEl.textContent = parts.join(" · ");
+  }
+
   function resetCurrentRequest() {
     currentMessageId = null;
     sendEl.textContent = "Send";
     sendEl.disabled = false;
+    setStatus("Ready", "idle");
+    updateComposerMeta();
   }
 
   function stopCurrentRequest() {
@@ -51,7 +82,9 @@
     const stoppedId = currentMessageId;
     vscode.postMessage({ type: "stop" });
     setAssistantText(stoppedId, "Stopped.", true);
+    assistantState.set(stoppedId, { text: "Stopped.", done: true, stopped: true });
     resetCurrentRequest();
+    setStatus("Stopped", "idle");
   }
 
   function updateLoadingElapsed() {
@@ -78,12 +111,18 @@
 
   function clearChat() {
     messagesEl.innerHTML = "";
+    if (emptyStateEl) messagesEl.appendChild(emptyStateEl);
+    inputEl.value = "";
+    autosizeInput();
+    mentionEl.hidden = true;
+    mentionEl.innerHTML = "";
     assistantById.clear();
     assistantState.clear();
     messagePayloadById.clear();
     lastSubmit = { text: "", at: 0 };
     lastAssistantFinal = { text: "", at: 0 };
     resetCurrentRequest();
+    updateEmptyState();
     vscode.postMessage({ type: "clearChat" });
   }
 
@@ -99,6 +138,7 @@
     if (!agentModeEl) return;
     agentModeEl.textContent = agentMode ? "Agent On" : "Agent Off";
     agentModeEl.classList.toggle("active", agentMode);
+    updateComposerMeta();
   }
 
   function autosizeInput() {
@@ -140,6 +180,70 @@
       vscode.postMessage({ type: "openLog" });
       inputEl.focus();
     });
+  }
+
+  document.querySelectorAll(".emptyAction").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      const prompt = btn.getAttribute("data-prompt") || "";
+      if (prompt) sendPrompt(prompt, prompt.includes("Fix") ? { agentMode: true } : undefined);
+    });
+  });
+
+  function hasExplicitUserRequest(text) {
+    const s = String(text || "").toLowerCase();
+    return /\b(fix|repair|debug|analy[sz]e|explain|create|build|implement|update|change|refactor|review|design|mockup|make|add|remove|delete|run|test|solve|help)\b/.test(s) ||
+      /(sửa|fix|lỗi|phân tích|giải thích|tạo|làm|thiết kế|mockup|cập nhật|đổi|thêm|xoá|xóa|chạy|kiểm tra|review|debug|giúp)/i.test(s);
+  }
+
+  function looksLikePastedBug(text) {
+    const s = String(text || "");
+    return /traceback \(most recent call last\)|\b(file|line)\s+\d+|syntaxerror|indentationerror|typeerror|referenceerror|valueerror|keyerror|attributeerror|importerror|modulenotfounderror|exception|stack trace|npm err!|error:\s|failed:|apply failed|corrupt patch|hunk out of range|context mismatch|cannot find module|enoent|eaddrinuse|port \d+ is in use|ts\d{4}|eslint|pytest|assertionerror/i.test(s);
+  }
+
+  function looksLikeCodeOnly(text) {
+    const s = String(text || "").trim();
+    if (!s) return false;
+    const lineCount = s.split(/\r?\n/).length;
+    const codeSignals = [
+      /^\s*(import|from|def|class|function|const|let|var|export|interface|type|@app\.route|if __name__|try:|except\b)/m,
+      /[{}()[\];]|=>|<\/?[a-z][\s>]/i,
+      /^@@\s+-\d/m,
+      /^diff --git\s+/m,
+      /^---\s+(a\/|\/dev\/null)/m,
+      /^\+\+\+\s+(b\/|\/dev\/null)/m
+    ];
+    const proseWords = s.match(/\b(the|please|can|you|hãy|giúp|muốn|cần|làm|sửa|tạo|thiết|kế)\b/gi) || [];
+    return lineCount >= 3 && codeSignals.some((re) => re.test(s)) && proseWords.length < 4;
+  }
+
+  function normalizeUserIntentForAgent(text) {
+    const original = String(text || "").trim();
+    if (!original || hasExplicitUserRequest(original)) return original;
+
+    if (looksLikePastedBug(original)) {
+      return [
+        "User pasted an error/stack trace without an explicit request.",
+        "Infer the task as: analyze the error, identify the affected files, fix the underlying code/config issue, validate the fix, and run safe verification commands if available.",
+        "If a code change is needed, return a clean unified diff only; Safegraph will apply it automatically.",
+        "",
+        "Pasted content:",
+        original
+      ].join("\n");
+    }
+
+    if (looksLikeCodeOnly(original)) {
+      return [
+        "User pasted code or a malformed patch without an explicit request.",
+        "Infer the task as: inspect it for bugs, incomplete edits, duplicate code, syntax errors, and integration issues. Fix the project files if needed and validate the result.",
+        "If no file path is obvious, use the active file and workspace context.",
+        "",
+        "Pasted content:",
+        original
+      ].join("\n");
+    }
+
+    return original;
   }
 
   function appendInlineMarkdown(parent, text) {
@@ -292,6 +396,7 @@
     }
 
     messagesEl.appendChild(row);
+    updateEmptyState();
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return row;
   }
@@ -432,6 +537,8 @@
       assistantById.set(id, el);
       currentMessageId = id;
       sendEl.textContent = "Stop";
+      setStatus("Thinking", "busy");
+      updateComposerMeta();
     }
     assistantState.set(id, { text, done: !!done });
 
@@ -451,6 +558,7 @@
     // During streaming (done=false), render partial text with loader animation.
     if (!done) {
       el.classList.add("loading");
+      setStatus("Thinking", "busy");
       if (!el.getAttribute("data-started-at")) {
         el.setAttribute("data-started-at", String(Date.now()));
       }
@@ -578,6 +686,7 @@
     }
 
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    updateEmptyState();
   }
 
   window.addEventListener("message", (event) => {
@@ -627,11 +736,12 @@
     if (!cleanText) return;
 
     function clearSentInput() {
-      const currentText = String(inputEl.value || "");
-      if (!currentText || currentText === rawText || currentText.trim() === cleanText) {
-        inputEl.value = "";
-        autosizeInput();
-      }
+      inputEl.value = "";
+      inputEl.blur();
+      autosizeInput();
+      mentionEl.hidden = true;
+      mentionEl.innerHTML = "";
+      setTimeout(() => inputEl.focus(), 0);
     }
 
     const now = Date.now();
@@ -647,12 +757,14 @@
     setTimeout(clearSentInput, 0);
     appendMessage("user", cleanText);
     setAssistantText(id, "Preparing request...", false);
+    setStatus("Preparing", "busy");
     inputEl.focus();
+    const agentText = normalizeUserIntentForAgent(cleanText);
 
     const payload = {
       type: "userMessage",
       id,
-      text: cleanText,
+      text: agentText,
       ts: Date.now(),
       agentMode,
       taggedFiles: Array.from(taggedFiles.keys()),
@@ -661,6 +773,7 @@
     };
     messagePayloadById.set(id, payload);
     vscode.postMessage(payload);
+    updateComposerMeta();
   }
 
   if (reviewWorkspaceEl) {
@@ -682,6 +795,16 @@
     });
   }
 
+  if (designMockupEl) {
+    designMockupEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      sendPrompt(
+        "Analyze the current project and user-facing workflow, then design and implement a polished mockup or UI improvement. Infer missing product requirements, create/edit the necessary UI files, include responsive states, realistic sample data, and provide safe run/verification commands.",
+        { agentMode: true }
+      );
+    });
+  }
+
   const MAX_FILE_BYTES = 200 * 1024; // 200KB per file
   const MAX_TOTAL_BYTES = 800 * 1024; // 800KB total
   const MAX_DROPPED_FOLDER_FILES = 80;
@@ -697,6 +820,7 @@
     attachmentsEl.innerHTML = "";
     if (attachments.size === 0) {
       attachmentsEl.hidden = true;
+      updateComposerMeta();
       return;
     }
     attachmentsEl.hidden = false;
@@ -734,6 +858,7 @@
     }
 
     attachmentsEl.appendChild(list);
+    updateComposerMeta();
   }
 
   function addContextItem(item) {
@@ -741,6 +866,7 @@
     if (item.kind === "file" && item.path) {
       taggedFiles.set(item.path, item.label || item.path);
       renderTaggedFiles();
+      setStatus("Context added", "ok");
       return;
     }
     if (item.kind === "attachment" && item.text) {
@@ -755,6 +881,7 @@
         mime: "text/plain"
       });
       renderAttachments();
+      setStatus("Attachment added", "ok");
     }
   }
 
@@ -963,6 +1090,7 @@
     taggedFilesEl.innerHTML = "";
     if (taggedFiles.size === 0) {
       taggedFilesEl.hidden = true;
+      updateComposerMeta();
       return;
     }
     taggedFilesEl.hidden = false;
@@ -997,6 +1125,7 @@
       list.appendChild(item);
     }
     taggedFilesEl.appendChild(list);
+    updateComposerMeta();
   }
 
   // Drag-drop support for files and folders
@@ -1025,9 +1154,12 @@
         const type = String(t || "").toLowerCase();
         return (
           type === "files" ||
+          type === "public.file-url" ||
+          type === "public.url" ||
           type === "text/uri-list" ||
           type === "text/plain" ||
           type.includes("uri-list") ||
+          type.includes("file-url") ||
           type.includes("code.uri") ||
           type.includes("vscode")
         );
@@ -1114,17 +1246,20 @@
       if (entryFiles.length >= MAX_DROPPED_FOLDER_FILES) {
         appendMessage("error", `Dropped folder truncated at ${MAX_DROPPED_FOLDER_FILES} files.`);
       }
+      setStatus("Attached", "ok");
       return;
     }
 
     const files = e.dataTransfer.files;
     if (files && files.length > 0) {
       await attachFilesFromList(files);
+      setStatus("Attached", "ok");
       return;
     }
 
     if (droppedUris.length > 0) {
       vscode.postMessage({ type: "droppedUris", uris: droppedUris });
+      setStatus("Adding context", "busy");
       return;
     }
 
@@ -1236,7 +1371,7 @@
 
       const cmd = document.createElement("div");
       cmd.className = "cmdText";
-      cmd.textContent = `${st.cmd}${st.decision === "allow" ? "  [auto]" : st.decision === "ask" ? "  [needs approval]" : ""}`;
+      cmd.textContent = `${st.cmd}${st.decision === "allow" ? "  [auto]" : st.decision === "ask" ? "  [approval needed]" : ""}`;
       if (st.reason) cmd.title = st.reason;
 
       const actions = document.createElement("div");
@@ -1249,7 +1384,7 @@
       const run = document.createElement("button");
       run.type = "button";
       run.className = "applyBtn";
-      run.textContent = "Run";
+      run.textContent = st.decision === "ask" ? "Run" : "Run";
       run.disabled = st.status !== "queued" || st.decision === "allow" || st.decision === "deny";
       run.addEventListener("click", () => {
         vscode.postMessage({ type: "runCommand", id, cmd: st.cmd });
@@ -1260,22 +1395,50 @@
       const cancel = document.createElement("button");
       cancel.type = "button";
       cancel.className = "discardBtn";
-      cancel.textContent = "Cancel";
+      cancel.textContent = st.status === "running" ? "Stop" : "Cancel";
       cancel.disabled = st.status !== "running";
       cancel.addEventListener("click", () => {
         vscode.postMessage({ type: "cancelCommand", id });
       });
 
+      const fix = document.createElement("button");
+      fix.type = "button";
+      fix.className = "applyBtn";
+      fix.textContent = "Fix with AI";
+      fix.disabled = st.status !== "error";
+      fix.addEventListener("click", () => {
+        const terminalLog = String(st.output || "").slice(-12000);
+        sendPrompt(
+          [
+            "Auto-debug this failed terminal command. Use the terminal log, active file, diagnostics, and repository context to find the root cause.",
+            "If a code/config change is needed, return a clean unified diff so Safegraph can apply it. Include safe verification commands after the diff.",
+            "",
+            `Command: ${st.cmd}`,
+            "",
+            "Terminal log:",
+            terminalLog || "(no terminal output captured)"
+          ].join("\n"),
+          {
+            agentMode: true,
+            attachments: [
+              ...Array.from(attachments.values()).map((a) => ({ name: a.name, text: a.text })),
+              { name: `terminal-${id}.log`, text: terminalLog || "(no terminal output captured)" }
+            ]
+          }
+        );
+      });
+
       actions.appendChild(status);
       actions.appendChild(run);
       actions.appendChild(cancel);
+      actions.appendChild(fix);
 
       row.appendChild(cmd);
       row.appendChild(actions);
 
       const out = document.createElement("pre");
       out.className = "cmdOut";
-      out.textContent = st.output || "";
+      out.textContent = st.output || (st.decision === "ask" ? `Needs approval: ${st.reason}` : "");
 
       cmdPanel.appendChild(row);
       cmdPanel.appendChild(out);
@@ -1287,7 +1450,14 @@
     if (!st) return;
     if (msg.status) st.status = msg.status;
     if (msg.output) st.output = (st.output + msg.output).slice(-8000);
+    if (msg.status === "running") setStatus("Running command", "busy");
+    if (msg.status === "success") setStatus("Command passed", "ok");
+    if (msg.status === "error") setStatus("Command failed", "error");
     // redraw all
     redrawCommands(Array.from(cmdState.keys()));
   }
+
+  updateEmptyState();
+  updateComposerMeta();
+  setStatus("Ready", "idle");
 })();

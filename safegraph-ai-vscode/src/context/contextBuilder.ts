@@ -1,10 +1,19 @@
 import * as vscode from "vscode";
+import { buildRepositoryContext } from "./repositoryIndex";
 
 export type ContextBuildOptions = {
   maxChars?: number;
   maxFiles?: number;
   includeFiles?: string[];
+  query?: string;
+  storageUri?: vscode.Uri;
+  includeRepository?: boolean;
 };
+
+function pushSection(parts: string[], title: string, body: string, maxChars?: number) {
+  const text = maxChars && body.length > maxChars ? body.slice(0, maxChars) + "\n[...truncated...]" : body;
+  parts.push(`${title}:\n${text}`);
+}
 
 function takeLastLines(text: string, maxLines: number) {
   const lines = text.split(/\r?\n/);
@@ -92,29 +101,44 @@ export async function buildContext(options: ContextBuildOptions = {}) {
   const maxChars = options.maxChars ?? 8000;
   const maxFiles = options.maxFiles ?? 80;
   const includeFiles = options.includeFiles ?? [];
+  const query = options.query ?? "";
 
-  const parts: string[] = [];
+  const priorityParts: string[] = [];
+  const backgroundParts: string[] = [];
   const folders = vscode.workspace.workspaceFolders ?? [];
-  parts.push(`Workspace folders: ${folders.map((f) => f.uri.fsPath).join(" | ") || "(none)"}`);
+  priorityParts.push(`Workspace folders: ${folders.map((f) => f.uri.fsPath).join(" | ") || "(none)"}`);
 
   const editor = vscode.window.activeTextEditor;
   if (editor) {
     const doc = editor.document;
     const lang = doc.languageId;
-    parts.push(`Active file: ${doc.uri.fsPath} (${lang})`);
-    parts.push(`File length: ${doc.lineCount} lines`);
+    priorityParts.push(`Active file: ${doc.uri.fsPath} (${lang})`);
+    priorityParts.push(`File length: ${doc.lineCount} lines`);
 
     const sel = editor.selection;
     const selected = !sel.isEmpty ? doc.getText(sel) : "";
     if (selected) {
-      parts.push("Selected text:");
-      parts.push(selected.slice(0, 3000));
+      pushSection(priorityParts, "Selected text", selected, 6000);
     } else {
-      parts.push("Active file tail (last 100 lines):");
-      parts.push(takeLastLines(doc.getText(), 100));
+      pushSection(priorityParts, "Active file tail (last 160 lines)", takeLastLines(doc.getText(), 160), 10000);
     }
   } else {
-    parts.push("Active file: (none)");
+    priorityParts.push("Active file: (none)");
+  }
+
+  if (includeFiles.length > 0) {
+    priorityParts.push("Tagged files (@):");
+    for (const fp of includeFiles) {
+      try {
+        const uri = resolveWorkspaceFilePath(fp);
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const text = Buffer.from(bytes).toString("utf8");
+        priorityParts.push(`--- ${fp} (${uri.fsPath}) ---`);
+        priorityParts.push(text.length > 20000 ? text.slice(0, 12000) + "\n\n[...middle truncated...]\n\n" + text.slice(-8000) : text);
+      } catch {
+        priorityParts.push(`--- ${fp} (unreadable) ---`);
+      }
+    }
   }
 
   try {
@@ -124,36 +148,48 @@ export async function buildContext(options: ContextBuildOptions = {}) {
       maxFiles
     );
     const hints = detectFramework(files);
-    if (hints.length) parts.push(`Framework: ${hints.join(", ")}`);
+    if (hints.length) backgroundParts.push(`Framework: ${hints.join(", ")}`);
     
-    parts.push(`Project files (${Math.min(maxFiles, files.length)} of ${files.length} visible):`);
-    parts.push(files.map((u) => u.fsPath).join("\n"));
+    backgroundParts.push(`Project files (${Math.min(maxFiles, files.length)} of ${files.length} visible):`);
+    backgroundParts.push(files.map((u) => u.fsPath).join("\n"));
   } catch {
     // ignore
   }
 
   const gitInfo = await getGitInfo();
-  if (gitInfo) parts.push(gitInfo);
+  if (gitInfo) backgroundParts.push(gitInfo);
 
   const diags = await getDiagnostics();
-  if (diags) parts.push(diags);
+  if (diags) backgroundParts.push(diags);
 
-  if (includeFiles.length > 0) {
-    parts.push("Tagged files (@):");
-    for (const fp of includeFiles) {
-      try {
-        const uri = resolveWorkspaceFilePath(fp);
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        const text = Buffer.from(bytes).toString("utf8");
-        parts.push(`--- ${fp} (${uri.fsPath}) ---`);
-        parts.push(takeLastLines(text, 150));
-      } catch {
-        parts.push(`--- ${fp} (unreadable) ---`);
-      }
+  const cfg = vscode.workspace.getConfiguration("safegraph");
+  const repositoryEnabled = Boolean(cfg.get("repositoryRag.enabled", true));
+  const shouldIncludeRepository =
+    repositoryEnabled && query.trim().length > 0 && options.includeRepository !== false;
+  if (shouldIncludeRepository) {
+    try {
+      const repositoryContext = await buildRepositoryContext({
+        query,
+        storageUri: options.storageUri,
+        maxFiles: Number(cfg.get("repositoryRag.maxFiles", 800)),
+        maxChunks: Number(cfg.get("repositoryRag.maxChunks", 10)),
+        maxChars: Number(cfg.get("repositoryRag.maxChars", 18000))
+      });
+      if (repositoryContext) priorityParts.push(repositoryContext);
+    } catch (e) {
+      backgroundParts.push(`Repository semantic context (@Repository): unavailable (${String(e)})`);
     }
   }
 
-  let ctx = parts.join("\n\n");
-  if (ctx.length > maxChars) ctx = ctx.slice(0, maxChars) + "\n\n[...truncated...]";
+  const priority = priorityParts.join("\n\n");
+  const backgroundBudget = Math.max(0, maxChars - priority.length - 80);
+  const background = backgroundParts.join("\n\n");
+  let ctx = priority;
+  if (backgroundBudget > 0 && background) {
+    ctx += "\n\n" + background.slice(0, backgroundBudget);
+    if (background.length > backgroundBudget) ctx += "\n\n[...background truncated...]";
+  } else if (priority.length > maxChars) {
+    ctx = priority.slice(0, Math.floor(maxChars * 0.6)) + "\n\n[...priority middle truncated...]\n\n" + priority.slice(-Math.floor(maxChars * 0.4));
+  }
   return ctx;
 }

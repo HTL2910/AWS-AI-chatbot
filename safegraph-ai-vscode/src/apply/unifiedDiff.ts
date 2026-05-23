@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as os from "os";
 import * as path from "path";
+import * as fs from "fs";
 import { spawn } from "child_process";
 
 type HunkLine = { kind: "context" | "add" | "del"; text: string };
@@ -13,32 +14,14 @@ type FilePatch = {
   hunks: Hunk[];
 };
 
-function looksLikeCodeLine(line: string) {
-  const trimmed = line.trim();
-  if (!trimmed) return false;
-  if (/^(\/\/|\/\*|\*|#\s)/.test(trimmed)) return false;
-  if (
-    /\b(const|let|var|function|class|def|return|if|else|elif|for|while|switch|case|import|export|from|async|await|try|catch|throw|new)\b/.test(
-      trimmed
-    )
-  ) {
-    return true;
-  }
-  return /[{}()[\];=<>]|=>|::|->|\.\w+\(|\b[A-Za-z_]\w*\s*=/.test(trimmed);
-}
-
 function sanitizeDiffText(diffText: string) {
   // Cursor-like tolerance: models sometimes include commentary lines inside ```diff``` blocks.
   // We keep only valid unified diff metadata and hunk lines.
   const out: string[] = [];
   const lines = diffText.replace(/\r\n/g, "\n").split("\n");
   let inHunk = false;
-  let afterFileHeader = false;
 
-  const isFileHeaderAt = (idx: number) => lines[idx]?.startsWith("--- ") && lines[idx + 1]?.startsWith("+++ ");
-
-  for (let idx = 0; idx < lines.length; idx++) {
-    const line = lines[idx];
+  for (const line of lines) {
     const isMetadata =
       line.startsWith("diff --git ") ||
       line.startsWith("index ") ||
@@ -50,28 +33,8 @@ function sanitizeDiffText(diffText: string) {
       line.startsWith("--- ") ||
       line.startsWith("+++ ");
 
-    if (inHunk && !line.startsWith("diff --git ") && !isFileHeaderAt(idx)) {
-      if (line === "") {
-        out.push(" ");
-      } else if (
-        line.startsWith("+") ||
-        line.startsWith("-") ||
-        line.startsWith(" ") ||
-        line.startsWith("\\ No newline at end of file")
-      ) {
-        out.push(line);
-      } else if (looksLikeCodeLine(line)) {
-        out.push("+" + line);
-      } else {
-        out.push(" " + line);
-      }
-      continue;
-    }
-
     if (isMetadata) {
       inHunk = false;
-      if (line.startsWith("--- ")) afterFileHeader = false;
-      if (line.startsWith("+++ ")) afterFileHeader = true;
       out.push(line);
       continue;
     }
@@ -82,8 +45,19 @@ function sanitizeDiffText(diffText: string) {
       continue;
     }
 
-    if (afterFileHeader) {
-      out.push(line);
+    if (inHunk) {
+      if (line === "") {
+        out.push(" ");
+      } else if (
+        line.startsWith("+") ||
+        line.startsWith("-") ||
+        line.startsWith(" ") ||
+        line.startsWith("\\ No newline at end of file")
+      ) {
+        out.push(line);
+      } else {
+        out.push(" " + line);
+      }
       continue;
     }
 
@@ -98,10 +72,9 @@ function sanitizeDiffText(diffText: string) {
   // Normalize blank lines inside hunks so git does not reject them.
   const fixed: string[] = [];
   inHunk = false;
-  for (let i = 0; i < out.length; i++) {
-    const l = out[i];
+  for (const l of out) {
     if (l.startsWith("@@ ")) inHunk = true;
-    if (l.startsWith("diff --git ") || (l.startsWith("--- ") && out[i + 1]?.startsWith("+++ "))) inHunk = false;
+    if (l.startsWith("--- ") || l.startsWith("+++ ") || l.startsWith("diff --git ")) inHunk = false;
     if (inHunk && l === "") fixed.push(" ");
     else fixed.push(l);
   }
@@ -109,14 +82,13 @@ function sanitizeDiffText(diffText: string) {
   // Ensure hunk body lines are valid patch lines.
   const normalized: string[] = [];
   inHunk = false;
-  for (let i = 0; i < fixed.length; i++) {
-    const l = fixed[i];
+  for (const l of fixed) {
     if (l.startsWith("@@ ")) {
       inHunk = true;
       normalized.push(l);
       continue;
     }
-    if (l.startsWith("diff --git ") || (l.startsWith("--- ") && fixed[i + 1]?.startsWith("+++ "))) {
+    if (l.startsWith("--- ") || l.startsWith("+++ ") || l.startsWith("diff --git ")) {
       inHunk = false;
       normalized.push(l);
       continue;
@@ -157,81 +129,8 @@ function parseHunkHeader(line: string) {
   };
 }
 
-function normalizeHunkHeaders(diffText: string) {
-  const lines = diffText.replace(/\r\n/g, "\n").split("\n");
-  const out: string[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const hh = parseHunkHeader(line);
-    if (!hh) {
-      out.push(line);
-      continue;
-    }
-
-    const body: string[] = [];
-    let j = i + 1;
-    while (j < lines.length) {
-      const next = lines[j];
-      const startsNextFile = next.startsWith("diff --git ") || (next.startsWith("--- ") && lines[j + 1]?.startsWith("+++ "));
-      if (next.startsWith("@@ ") || startsNextFile) break;
-      body.push(next);
-      j++;
-    }
-
-    let oldLines = 0;
-    let newLines = 0;
-    for (const bodyLine of body) {
-      if (bodyLine.startsWith("\\ No newline at end of file")) continue;
-      const marker = bodyLine.slice(0, 1);
-      if (marker === " ") {
-        oldLines++;
-        newLines++;
-      } else if (marker === "-") {
-        oldLines++;
-      } else if (marker === "+") {
-        newLines++;
-      }
-    }
-
-    const suffix = /^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@(.*)$/.exec(line)?.[1] ?? "";
-    out.push(`@@ -${hh.oldStart},${oldLines} +${hh.newStart},${newLines} @@${suffix}`);
-    out.push(...body);
-    i = j - 1;
-  }
-
-  return out.join("\n");
-}
-
-function parseLooseChunkToHunks(lines: string[], startIndex: number) {
-  const hunkLines: HunkLine[] = [];
-  let i = startIndex;
-  while (i < lines.length) {
-    const line = lines[i];
-    const startsNextFile = line.startsWith("diff --git ") || (line.startsWith("--- ") && lines[i + 1]?.startsWith("+++ "));
-    if (startsNextFile) break;
-    if (line.startsWith("+++ ") || line.startsWith("index ") || line.startsWith("new file mode ") || line.startsWith("deleted file mode ")) {
-      i++;
-      continue;
-    }
-    if (line.startsWith("+") && !line.startsWith("+++")) {
-      hunkLines.push({ kind: "add", text: line.slice(1) });
-    } else if (line.startsWith("-") && !line.startsWith("---")) {
-      hunkLines.push({ kind: "del", text: line.slice(1) });
-    } else if (line.startsWith(" ")) {
-      hunkLines.push({ kind: "context", text: line.slice(1) });
-    } else if (line.trim() === "") {
-      hunkLines.push({ kind: "context", text: "" });
-    } else if (looksLikeCodeLine(line)) {
-      hunkLines.push({ kind: "add", text: line });
-    }
-    i++;
-  }
-  return { hunkLines, nextIndex: i };
-}
-
 export function parseUnifiedDiff(diffText: string): FilePatch[] {
-  const cleaned = normalizeHunkHeaders(sanitizeDiffText(diffText));
+  const cleaned = sanitizeDiffText(diffText);
   const lines = cleaned.replace(/\r\n/g, "\n").split("\n");
   const patches: FilePatch[] = [];
 
@@ -309,27 +208,11 @@ export function parseUnifiedDiff(diffText: string): FilePatch[] {
         });
       }
     }
-
-    if (hunks.length === 0 && i < lines.length && !lines[i]?.startsWith("@@ ")) {
-      const loose = parseLooseChunkToHunks(lines, i);
-      if (loose.hunkLines.length > 0) {
-        const newLines = loose.hunkLines.filter((l) => l.kind !== "del").length;
-        const oldLines = loose.hunkLines.filter((l) => l.kind !== "add").length;
-        hunks.push({
-          oldStart: 1,
-          oldLines,
-          newStart: 1,
-          newLines,
-          lines: loose.hunkLines
-        });
-        i = loose.nextIndex;
-      }
-    }
     
     // Process hunks if present
     while (i < lines.length) {
       const line = lines[i];
-      if (line.startsWith("diff --git ") || (line.startsWith("--- ") && lines[i + 1]?.startsWith("+++ "))) break;
+      if (line.startsWith("--- ")) break;
       if (!line.startsWith("@@ ")) {
         i++;
         continue;
@@ -340,8 +223,7 @@ export function parseUnifiedDiff(diffText: string): FilePatch[] {
       const hunkLines: HunkLine[] = [];
       while (i < lines.length) {
         const hl = lines[i];
-        const startsNextFile = hl.startsWith("diff --git ") || (hl.startsWith("--- ") && lines[i + 1]?.startsWith("+++ "));
-        if (hl.startsWith("@@ ") || startsNextFile) break;
+        if (hl.startsWith("@@ ") || hl.startsWith("--- ")) break;
         if (hl.startsWith("\\ No newline at end of file")) {
           i++;
           continue;
@@ -378,9 +260,8 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
   const out = original.slice();
   // We apply hunks in order; unified diffs are ordered top-down.
   let lineOffset = 0;
-  let appliedOps = 0;
 
-  function sameLine(a: string | undefined, b: string, loose: boolean) {
+  function sameLine(a: string | undefined, b: string, loose = false) {
     if (a == null) return false;
     if (a === b) return true;
     return loose && a.trim() === b.trim();
@@ -396,7 +277,6 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
     if (left.includes(right) || right.includes(left)) {
       return Math.min(left.length, right.length) / Math.max(left.length, right.length);
     }
-
     const leftTokens = new Set(left.split(/\W+/).filter(Boolean));
     const rightTokens = new Set(right.split(/\W+/).filter(Boolean));
     if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
@@ -434,7 +314,6 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
     let best = { start: -1, score: 0, deleteHits: 0 };
     const expected = Math.max(0, Math.min(out.length, h.oldStart - 1 + lineOffset));
     const maxStart = Math.max(0, out.length - 1);
-
     for (let start = 0; start <= maxStart; start++) {
       let score = 0;
       let deleteHits = 0;
@@ -452,15 +331,36 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
           deleteHits++;
         }
       }
-      const distancePenalty = Math.min(4, Math.abs(start - expected) / 200);
-      score -= distancePenalty;
+      score -= Math.min(4, Math.abs(start - expected) / 200);
       if (score > best.score) best = { start, score, deleteHits };
     }
+    if (delSeq.length > 0 && best.deleteHits === 0) return null;
+    return best.score >= Math.max(4, oldSeq.length * 1.5) ? best.start : null;
+  }
 
-    const hasDeletes = delSeq.length > 0;
-    if (hasDeletes && best.deleteHits === 0) return null;
-    const minScore = hasDeletes ? 5 : Math.max(4, oldSeq.length * 1.5);
-    return best.score >= minScore ? best.start : null;
+  function sequenceExists(seq: string[], loose = false) {
+    if (seq.length === 0) return false;
+    for (let start = 0; start <= out.length - seq.length; start++) {
+      let ok = true;
+      for (let j = 0; j < seq.length; j++) {
+        if (!sameLine(out[start + j], seq[j], loose)) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) return true;
+    }
+    return false;
+  }
+
+  function hunkAlreadyApplied(h: Hunk) {
+    const added = h.lines.filter((l) => l.kind === "add").map((l) => l.text);
+    const deleted = h.lines.filter((l) => l.kind === "del").map((l) => l.text);
+    if (added.length === 0) return false;
+    const additionsPresent = sequenceExists(added) || sequenceExists(added, true);
+    if (!additionsPresent) return false;
+    if (deleted.length === 0) return true;
+    return !deleted.some((line) => out.some((current) => sameLine(current, line) || sameLine(current, line, true)));
   }
 
   function applyOneHunk(h: Hunk, idx0: number, loose = false) {
@@ -483,12 +383,6 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
 
   function applyOneHunkApprox(h: Hunk, idx0: number) {
     let idx = idx0;
-    let delta = 0;
-    let hunkAppliedOps = 0;
-    const hasEdits = h.lines.some((l) => l.kind !== "context");
-    const oldSeq = h.lines.filter((l) => l.kind !== "add").map((l) => l.text);
-    const newSeq = h.lines.filter((l) => l.kind !== "del").map((l) => l.text);
-
     const seek = (text: string, from: number, limit: number) => {
       const end = Math.min(out.length, from + limit);
       let best = { idx: -1, score: 0 };
@@ -507,51 +401,26 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
           continue;
         }
         const nearby = seek(hl.text, idx, 8);
-        if (nearby >= 0) {
-          idx = nearby + 1;
-        }
-        // If context cannot be found, treat it as model commentary/stale context and skip it.
+        if (nearby >= 0) idx = nearby + 1;
         continue;
       }
-
       if (hl.kind === "del") {
         if (sameLine(out[idx], hl.text, true)) {
           out.splice(idx, 1);
-          delta -= 1;
-          appliedOps += 1;
-          hunkAppliedOps += 1;
+          lineOffset -= 1;
           continue;
         }
         const nearby = seek(hl.text, idx, 12);
-        if (nearby < 0) {
-          // Stale deletion line: skip it instead of failing the whole patch.
-          continue;
+        if (nearby >= 0) {
+          out.splice(nearby, 1);
+          idx = nearby;
+          lineOffset -= 1;
         }
-        out.splice(nearby, 1);
-        idx = nearby;
-        delta -= 1;
-        appliedOps += 1;
-        hunkAppliedOps += 1;
         continue;
       }
-
       out.splice(idx, 0, hl.text);
       idx++;
-      delta += 1;
-      appliedOps += 1;
-      hunkAppliedOps += 1;
-    }
-
-    lineOffset += delta;
-
-    if (hunkAppliedOps === 0 && hasEdits) {
-      const anchor = findApproxHunkStartIndex(h) ?? idx0;
-      const removeLen = Math.max(1, oldSeq.length);
-      const boundedStart = Math.max(0, Math.min(out.length, anchor));
-      const boundedEnd = Math.max(boundedStart, Math.min(out.length, boundedStart + removeLen));
-      const replacement = newSeq.length > 0 ? newSeq : oldSeq;
-      out.splice(boundedStart, boundedEnd - boundedStart, ...replacement);
-      appliedOps += replacement.length > 0 || boundedEnd - boundedStart > 0 ? 1 : 0;
+      lineOffset += 1;
     }
   }
 
@@ -559,29 +428,18 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
     // oldStart is 1-based
     let idx = (h.oldStart - 1) + lineOffset;
     if (idx < 0 || idx > out.length) {
-      const fuzzy = findHunkStartIndex(h);
+      const fuzzy = findHunkStartIndex(h) ?? findHunkStartIndex(h, true) ?? findApproxHunkStartIndex(h);
       if (fuzzy == null) {
-        const looseFuzzy = findHunkStartIndex(h, true);
-        if (looseFuzzy == null) {
-          const approx = findApproxHunkStartIndex(h);
-          if (approx == null) {
-            const fallback = Math.max(0, Math.min(out.length, h.oldStart - 1 + lineOffset));
-            applyOneHunkApprox(h, fallback);
-          } else {
-            applyOneHunkApprox(h, approx);
-          }
-          continue;
-        } else {
-          idx = looseFuzzy;
-        }
-      } else {
-        idx = fuzzy;
+        if (hunkAlreadyApplied(h)) continue;
+        throw new Error("Hunk out of range.");
       }
+      idx = fuzzy;
     }
 
     try {
       applyOneHunk(h, idx);
     } catch {
+      if (hunkAlreadyApplied(h)) continue;
       // Fallback: try fuzzy locate if strict position fails due to drift.
       const fuzzy = findHunkStartIndex(h);
       if (fuzzy != null) {
@@ -589,147 +447,181 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
           applyOneHunk(h, fuzzy);
           continue;
         } catch {
-          // Keep falling through to the repair mode below.
+          // continue to looser repair
         }
       }
-
-      // Last local fallback: allow whitespace/indent drift in context and delete lines.
       const looseFuzzy = findHunkStartIndex(h, true);
       if (looseFuzzy != null) {
         try {
           applyOneHunk(h, looseFuzzy, true);
           continue;
         } catch {
-          // Keep falling through to approximate repair.
+          // continue to approximate repair
         }
       }
-
-      // Repair malformed model diffs: use '-' lines as the source of truth and stale context only as hints.
       const approx = findApproxHunkStartIndex(h);
       if (approx == null) {
-        const fallback = Math.max(0, Math.min(out.length, h.oldStart - 1 + lineOffset));
-        applyOneHunkApprox(h, fallback);
-      } else {
-        applyOneHunkApprox(h, approx);
+        if (hunkAlreadyApplied(h)) continue;
+        throw new Error("Context mismatch while applying diff.");
       }
+      applyOneHunkApprox(h, approx);
     }
-  }
-  if (appliedOps === 0) {
-    throw new Error("No applicable changes found in diff.");
   }
   return out;
 }
 
-function extractTargetChunk(diffText: string, targetPath?: string) {
-  const lines = diffText.replace(/\r\n/g, "\n").split("\n");
-  const chunks: string[] = [];
-  let cur: string[] = [];
-  let curTarget = "";
-
-  const flush = () => {
-    if (cur.length === 0) return;
-    chunks.push(cur.join("\n"));
-    cur = [];
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.startsWith("diff --git ")) {
-      flush();
-      cur.push(line);
-      const m = /^diff --git a\/([^\s]+)\s+b\/([^\s]+)\s*$/.exec(line);
-      curTarget = m?.[2] || m?.[1] || "";
-      continue;
-    }
-    if (line.startsWith("--- ") && cur.length > 0) {
-      flush();
-    }
-    cur.push(line);
-  }
-  flush();
-
-  if (chunks.length === 0) return "";
-  if (!targetPath) return chunks[0];
-
-  const normalizedTarget = targetPath.replace(/^[ab]\//, "");
-  return (
-    chunks.find((chunk) => {
-      const file = String(chunk).match(/^\+\+\+\s+([^\t\r\n]+).*$/m)?.[1]?.replace(/^[ab]\//, "");
-      if (file && file === normalizedTarget) return true;
-      const file2 = String(chunk).match(/^---\s+([^\t\r\n]+).*$/m)?.[1]?.replace(/^[ab]\//, "");
-      return !!file2 && file2 === normalizedTarget;
-    }) || chunks[0]
+function validateAppliedText(filePath: string, text: string) {
+  const artifact = text.replace(/\r\n/g, "\n").split("\n").find((line) =>
+    /^@@\s+-\d/.test(line) ||
+    /^diff --git\s+/.test(line) ||
+    /^---\s+(?:a\/|\/dev\/null)/.test(line) ||
+    /^\+\+\+\s+(?:b\/|\/dev\/null)/.test(line)
   );
-}
-
-function buildFallbackRewriteText(diffText: string, targetPath?: string) {
-  const chunk = extractTargetChunk(diffText, targetPath);
-  if (!chunk) return "";
-
-  const lines = chunk.replace(/\r\n/g, "\n").split("\n");
-  const out: string[] = [];
-  let inHunk = false;
-
-  for (const line of lines) {
-    if (line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("diff --git ") || line.startsWith("index ")) {
-      continue;
-    }
-    if (line.startsWith("@@ ")) {
-      inHunk = true;
-      continue;
-    }
-    if (line.startsWith("\\ No newline at end of file")) continue;
-    if (line.startsWith("+")) {
-      out.push(line.slice(1));
-      continue;
-    }
-    if (line.startsWith(" ")) {
-      out.push(line.slice(1));
-      continue;
-    }
-    if (line.startsWith("-")) {
-      continue;
-    }
-    if (inHunk || looksLikeCodeLine(line)) {
-      out.push(line);
-    }
+  if (artifact) {
+    throw new Error(
+      `Refused to apply ${filePath}: generated file still contains diff artifact "${artifact.slice(0, 120)}".`
+    );
   }
-
-  return out.join("\n").trimEnd();
 }
 
-export function applyUnifiedDiffToText(originalText: string, diffText: string, targetPath?: string) {
+async function runProcess(args: string[]) {
+  return new Promise<{ code: number | null; out: string }>((resolve) => {
+    const [cmd, ...rest] = args;
+    let done = false;
+    const finish = (code: number | null, out: string) => {
+      if (done) return;
+      done = true;
+      resolve({ code, out });
+    };
+    const p = spawn(cmd, rest, { shell: false, windowsHide: true });
+    const chunks: Buffer[] = [];
+    p.stdout.on("data", (d) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(d)));
+    p.stderr.on("data", (d) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(d)));
+    p.on("close", (code) => finish(code, Buffer.concat(chunks).toString("utf8")));
+    p.on("error", (e) => finish(-1, String(e)));
+  });
+}
+
+function existingExecutable(filePath: string) {
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureSafegraphVenvPython(root: string) {
+  const bin = process.platform === "win32" ? "Scripts/python.exe" : "bin/python";
+  const venvPython = path.join(root, ".safegraph-venv", bin);
+  if (existingExecutable(venvPython)) return venvPython;
+
+  const systemPython = [
+    "/usr/bin/python3",
+    "/opt/homebrew/bin/python3",
+    "/usr/local/bin/python3",
+    process.platform === "win32" ? "python" : "python3"
+  ].find((candidate) => (candidate.includes(path.sep) ? existingExecutable(candidate) : true));
+  if (!systemPython) return "";
+
+  const result = await runProcess([systemPython, "-m", "venv", path.join(root, ".safegraph-venv")]);
+  if (result.code === 0 && existingExecutable(venvPython)) return venvPython;
+  return "";
+}
+
+async function candidatePythonCommands() {
+  const candidates: string[] = [];
+  const folders = vscode.workspace.workspaceFolders || [];
+  for (const folder of folders) {
+    const root = folder.uri.fsPath;
+    candidates.push(
+      path.join(root, "venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python"),
+      path.join(root, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python"),
+      path.join(root, ".safegraph-venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python")
+    );
+    const safegraphVenv = await ensureSafegraphVenvPython(root);
+    if (safegraphVenv) candidates.push(safegraphVenv);
+  }
+  candidates.push(
+    "/usr/bin/python3",
+    "/opt/homebrew/bin/python3",
+    "/usr/local/bin/python3",
+    process.platform === "win32" ? "python" : "python3",
+    "python"
+  );
+  return candidates;
+}
+
+async function validatePythonSyntax(filePath: string, text: string) {
+  if (!filePath.toLowerCase().endsWith(".py")) return;
+  const tmpPath = path.join(os.tmpdir(), `safegraph-ai-preflight-${Date.now()}-${Math.random().toString(16).slice(2)}.py`);
+  await vscode.workspace.fs.writeFile(vscode.Uri.file(tmpPath), Buffer.from(text, "utf8"));
+  let result: { code: number | null; out: string } | undefined;
+  let sawPython = false;
+  for (const python of await candidatePythonCommands()) {
+    if (python.includes(path.sep) && !existingExecutable(python)) continue;
+    result = await runProcess([python, "-m", "py_compile", tmpPath]);
+    if (result.code === -1) continue;
+    if (/spawn .* ENOENT/i.test(result.out)) continue;
+    sawPython = true;
+    if (result.code === 0) break;
+  }
+  try {
+    await vscode.workspace.fs.delete(vscode.Uri.file(tmpPath), { useTrash: false });
+  } catch {
+    // ignore temp cleanup failure
+  }
+  if (!sawPython) return;
+  if (result && result.code !== 0 && result.code !== -1) {
+    throw new Error(`Refused to apply ${filePath}: Python syntax check failed: ${result.out.trim()}`);
+  }
+}
+
+function applySinglePatchToText(originalText: string, diffText: string, targetPath: string) {
   const patches = parseUnifiedDiff(diffText);
-  const patch = targetPath
-    ? patches.find((p) => p.filePath === targetPath || p.oldPath === targetPath || p.newPath === targetPath)
-    : patches[0];
-  if (!patch) throw new Error(`No patch found for ${targetPath || "first file"}.`);
+  const patch = patches.find((p) => p.filePath === targetPath || p.oldPath === targetPath || p.newPath === targetPath);
+  if (!patch) throw new Error(`No patch found for ${targetPath}.`);
   if (patch.kind === "delete") return "";
 
   const eol = originalText.includes("\r\n") ? "\r\n" : "\n";
   const lines = originalText ? originalText.replace(/\r\n/g, "\n").split("\n") : [];
-
   if (patch.kind === "create") {
     const created: string[] = [];
-    for (const h of patch.hunks) {
-      for (const l of h.lines) {
-        if (l.kind === "add") created.push(l.text);
-      }
-    }
+    for (const h of patch.hunks) for (const l of h.lines) if (l.kind === "add") created.push(l.text);
     return created.join("\n").replace(/\n/g, eol);
   }
 
-  try {
-    return applyHunksToLines(lines, patch.hunks).join("\n").replace(/\n/g, eol);
-  } catch (e) {
-    const msg = String(e instanceof Error ? e.message : e);
-    if (!/No applicable changes found in diff|Hunk out of range|Context mismatch|Delete line mismatch/i.test(msg)) {
-      throw e;
+  return applyHunksToLines(lines, patch.hunks).join("\n").replace(/\n/g, eol);
+}
+
+export async function preflightUnifiedDiffAgainstWorkspace(diffText: string) {
+  const patches = parseUnifiedDiff(diffText);
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) throw new Error("No workspace folder open.");
+
+  const root = folders[0].uri;
+  const checked: string[] = [];
+  for (const patch of patches) {
+    if (patch.kind === "delete") {
+      checked.push(patch.filePath);
+      continue;
     }
-    const fallback = buildFallbackRewriteText(diffText, targetPath);
-    if (!fallback) throw e;
-    return fallback.replace(/\n/g, eol);
+
+    const uri = vscode.Uri.joinPath(root, patch.filePath);
+    let originalText = "";
+    try {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      originalText = Buffer.from(bytes).toString("utf8");
+    } catch {
+      originalText = "";
+    }
+
+    const newText = applySinglePatchToText(originalText, diffText, patch.filePath);
+    validateAppliedText(patch.filePath, newText);
+    await validatePythonSyntax(patch.filePath, newText);
+    checked.push(patch.filePath);
   }
+  return checked;
 }
 
 export async function applyUnifiedDiffToWorkspace(diffText: string) {
@@ -771,6 +663,8 @@ export async function applyUnifiedDiffToWorkspace(diffText: string) {
       const created: string[] = [];
       for (const h of fp.hunks) for (const l of h.lines) created.push(l.text);
       const newText = created.join("\n").replace(/\n/g, eol);
+      validateAppliedText(fp.filePath, newText);
+      await validatePythonSyntax(fp.filePath, newText);
       if (!existed) {
         edit.createFile(uri, { overwrite: false, ignoreIfExists: false });
         edit.insert(uri, new vscode.Position(0, 0), newText);
@@ -786,28 +680,10 @@ export async function applyUnifiedDiffToWorkspace(diffText: string) {
     }
 
     // update
-    let newText = "";
-    try {
-      newText = applyHunksToLines(lines, fp.hunks).join("\n").replace(/\n/g, eol);
-    } catch (e) {
-      const msg = String(e instanceof Error ? e.message : e);
-      if (!/No applicable changes found in diff|Hunk out of range|Context mismatch|Delete line mismatch/i.test(msg)) {
-        throw e;
-      }
-      const fallback = buildFallbackRewriteText(
-        [
-          `--- a/${fp.filePath}`,
-          `+++ b/${fp.filePath}`,
-          ...fp.hunks.flatMap((h) => [
-            `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`,
-            ...h.lines.map((l) => `${l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}${l.text}`)
-          ])
-        ].join("\n"),
-        fp.filePath
-      );
-      if (!fallback) throw e;
-      newText = fallback.replace(/\n/g, eol);
-    }
+    const newLines = applyHunksToLines(lines, fp.hunks);
+    const newText = newLines.join("\n").replace(/\n/g, eol);
+    validateAppliedText(fp.filePath, newText);
+    await validatePythonSyntax(fp.filePath, newText);
     const fullRange = new vscode.Range(new vscode.Position(0, 0), new vscode.Position(lines.length, 0));
     edit.replace(uri, fullRange, newText);
   }
@@ -819,7 +695,7 @@ export async function applyUnifiedDiffToWorkspace(diffText: string) {
 async function runGitApply3Way(rootFsPath: string, diffText: string, output?: vscode.OutputChannel) {
   const tmpDir = os.tmpdir();
   const patchPath = path.join(tmpDir, `safegraph-ai-${Date.now()}.patch`);
-  const cleaned = normalizeHunkHeaders(sanitizeDiffText(diffText));
+  const cleaned = sanitizeDiffText(diffText);
   await vscode.workspace.fs.writeFile(vscode.Uri.file(patchPath), Buffer.from(cleaned, "utf8"));
 
   const run = (args: string[]) =>
@@ -878,62 +754,19 @@ async function runGitApply3Way(rootFsPath: string, diffText: string, output?: vs
 }
 
 export async function applyUnifiedDiffToWorkspaceSmart(diffText: string, output?: vscode.OutputChannel) {
-  let firstError: any;
   try {
     await applyUnifiedDiffToWorkspace(diffText);
-    return;
   } catch (e: any) {
-    firstError = e;
     const msg = String(e?.message || e);
-    // Only fallback for common patch drift or malformed-model-diff issues.
-    if (!/Hunk out of range|Context mismatch|Delete line mismatch|No applicable changes found in diff|No file patches found in diff|corrupt patch|malformed diff/i.test(msg)) {
+    // Only fallback for common patch drift issues.
+    if (!/Hunk out of range|Context mismatch|Delete line mismatch/i.test(msg)) {
       throw e;
     }
     const folders = vscode.workspace.workspaceFolders;
     const rootFsPath = folders?.[0]?.uri.fsPath;
     if (!rootFsPath) throw e;
     output?.appendLine(`[safegraph-ai] apply fuzzy failed (${msg}); trying git apply --3way fallback`);
-    try {
-      await runGitApply3Way(rootFsPath, diffText, output);
-      output?.appendLine("[safegraph-ai] git apply --3way succeeded");
-    } catch (gitError: any) {
-      const gitMsg = String(gitError?.message || gitError);
-      if (/corrupt patch/i.test(gitMsg)) {
-        throw new Error(
-          `AI returned a malformed diff that could not be repaired locally. First local apply error: ${String(
-            firstError?.message || firstError
-          )}. Git error: ${gitMsg}`
-        );
-      }
-      if (/No applicable changes found in diff/i.test(String(firstError?.message || firstError))) {
-        const activeUri = vscode.window.activeTextEditor?.document.uri;
-        if (activeUri && activeUri.scheme === "file") {
-          const targetPath = vscode.workspace.asRelativePath(activeUri, false);
-          const fallback = buildFallbackRewriteText(diffText, targetPath);
-          if (fallback.trim().length > 0) {
-            const bytes = await vscode.workspace.fs.readFile(activeUri);
-            const text = Buffer.from(bytes).toString("utf8");
-            const eol = text.includes("\r\n") ? "\r\n" : "\n";
-            const edit = new vscode.WorkspaceEdit();
-            const fullRange = new vscode.Range(
-              new vscode.Position(0, 0),
-              new vscode.Position(text.replace(/\r\n/g, "\n").split("\n").length, 0)
-            );
-            edit.replace(activeUri, fullRange, fallback.replace(/\n/g, eol));
-            const ok = await vscode.workspace.applyEdit(edit);
-            if (ok) {
-              output?.appendLine("[safegraph-ai] applied active-file rewrite fallback");
-              return;
-            }
-          }
-        }
-        throw new Error(
-          `AI returned a diff that could not be mapped to any file changes. First local apply error: ${String(
-            firstError?.message || firstError
-          )}. Git error: ${gitMsg}`
-        );
-      }
-      throw gitError;
-    }
+    await runGitApply3Way(rootFsPath, diffText, output);
+    output?.appendLine("[safegraph-ai] git apply --3way succeeded");
   }
 }

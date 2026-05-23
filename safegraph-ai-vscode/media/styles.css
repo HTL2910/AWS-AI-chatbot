@@ -1,16 +1,21 @@
 :root {
-  --bg: #0f172a;
-  --panel: #0b1224;
-  --muted: #94a3b8;
-  --user: #2563eb;
-  --assistant: #111827;
+  --bg: #101318;
+  --panel: #171b22;
+  --muted: #9aa4b2;
+  --user: #255f85;
+  --assistant: #1b222b;
   --border: rgba(148, 163, 184, 0.25);
-  --text: #e2e8f0;
+  --text: #e7edf5;
+  --accent: #3b82f6;
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --danger: #ef4444;
 }
 
 html,
 body {
   height: 100%;
+  overflow: hidden;
 }
 
 body {
@@ -28,8 +33,9 @@ body {
 
 .root {
   height: 100%;
+  min-height: 0;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto auto;
   position: relative;
 }
 
@@ -40,7 +46,7 @@ body {
   gap: 8px;
   padding: 10px;
   border-bottom: 1px solid var(--border);
-  background: rgba(11, 18, 36, 0.9);
+  background: rgba(23, 27, 34, 0.95);
 }
 
 .title {
@@ -50,6 +56,7 @@ body {
   font-weight: 600;
   color: var(--text);
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .versionBadge {
@@ -64,11 +71,43 @@ body {
   white-space: nowrap;
 }
 
+.statusBadge {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.statusBadge[data-tone="busy"] {
+  border-color: rgba(245, 158, 11, 0.42);
+  background: rgba(245, 158, 11, 0.14);
+  color: #fde68a;
+}
+
+.statusBadge[data-tone="ok"] {
+  border-color: rgba(34, 197, 94, 0.42);
+  background: rgba(34, 197, 94, 0.14);
+  color: #bbf7d0;
+}
+
+.statusBadge[data-tone="error"] {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.14);
+  color: #fecaca;
+}
+
 .topbarActions {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .topbarBtn.active {
@@ -95,9 +134,51 @@ body {
 .messages {
   padding: 12px;
   overflow: auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  position: relative;
+  overscroll-behavior: contain;
+}
+
+.emptyState {
+  margin: auto;
+  max-width: 520px;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.emptyTitle {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.emptyText {
+  margin-bottom: 14px;
+}
+
+.emptyActions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.emptyAction {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.emptyAction:hover {
+  background: rgba(148, 163, 184, 0.16);
 }
 
 .cmdPanel {
@@ -161,16 +242,17 @@ body {
   padding: 8px 10px;
   white-space: pre-wrap;
   word-break: break-word;
+  max-width: min(880px, 94%);
 }
 
 .msg.user {
-  background: rgba(37, 99, 235, 0.18);
-  border-color: rgba(37, 99, 235, 0.35);
+  background: rgba(37, 95, 133, 0.22);
+  border-color: rgba(56, 189, 248, 0.28);
   align-self: flex-end;
 }
 
 .msg.assistant {
-  background: rgba(17, 24, 39, 0.65);
+  background: rgba(27, 34, 43, 0.82);
   align-self: flex-start;
 }
 
@@ -411,6 +493,15 @@ body {
   border-top: 1px solid var(--border);
   background: var(--panel);
   position: relative;
+  z-index: 20;
+  box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.18);
+}
+
+.composerMeta {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+  min-height: 16px;
 }
 
 .contextTools {
@@ -424,7 +515,7 @@ body {
   position: absolute;
   left: 10px;
   right: 10px;
-  bottom: 52px;
+  bottom: calc(100% + 6px);
   max-height: 240px;
   overflow: auto;
   border: 1px solid var(--border);
@@ -454,6 +545,10 @@ body {
 }
 
 .input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   min-height: 36px;
   max-height: 160px;
   background: rgba(148, 163, 184, 0.08);
@@ -472,8 +567,10 @@ body {
 }
 
 .send {
-  border: 1px solid rgba(239, 68, 68, 0.75);
-  background: rgba(239, 68, 68, 0.25);
+  min-width: 74px;
+  align-self: stretch;
+  border: 1px solid rgba(236, 72, 153, 0.55);
+  background: rgba(236, 72, 153, 0.18);
   color: var(--text);
   border-radius: 6px;
   padding: 8px 10px;
@@ -481,12 +578,12 @@ body {
 }
 
 .send:hover {
-  background: rgba(239, 68, 68, 0.35);
+  background: rgba(236, 72, 153, 0.26);
 }
 
 .toolBtn {
-  border: 1px solid rgba(59, 130, 246, 0.75);
-  background: rgba(59, 130, 246, 0.25);
+  border: 1px solid rgba(59, 130, 246, 0.48);
+  background: rgba(59, 130, 246, 0.16);
   color: var(--text);
   border-radius: 6px;
   padding: 5px 8px;
@@ -495,7 +592,7 @@ body {
 }
 
 .toolBtn:hover {
-  background: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.24);
 }
 
 .taggedFilesList {
@@ -503,6 +600,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   margin: 10px;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -529,7 +627,7 @@ body {
   gap: 6px;
   background: rgba(37, 99, 235, 0.2);
   border: 1px solid rgba(37, 99, 235, 0.4);
-  border-radius: 4px;
+  border-radius: 999px;
   padding: 4px 8px;
   font-size: 12px;
   max-width: 100%;
@@ -570,7 +668,8 @@ body {
   font-weight: 600;
   color: var(--text);
   z-index: 100;
-  pointer-events: none;
+  cursor: copy;
+  pointer-events: auto;
 }
 
 .messageActions {
@@ -601,5 +700,23 @@ body {
 }
 
 .send:active {
-  background: rgba(239, 68, 68, 0.45);
+  background: rgba(236, 72, 153, 0.34);
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    align-items: flex-start;
+  }
+
+  .topbarActions {
+    width: 100%;
+  }
+
+  .topbarBtn {
+    flex: 1 1 auto;
+  }
+
+  .msg {
+    max-width: 100%;
+  }
 }

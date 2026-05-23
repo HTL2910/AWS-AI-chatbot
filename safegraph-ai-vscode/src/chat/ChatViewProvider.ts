@@ -1,11 +1,11 @@
 import * as vscode from "vscode";
 import { getChatWebviewHtml } from "./webviewHtml";
-import { bedrockConverse, isExpiredBearerTokenError } from "../bedrock/bedrockClient";
+import { bedrockConverse } from "../bedrock/bedrockClient";
 import { buildContext } from "../context/contextBuilder";
 import { maskSensitive } from "../security/mask";
-import { BedrockApiKeyInfo, loadBedrockApiKeyInfos, maskApiKey } from "../config/env";
-import { applyUnifiedDiffToWorkspaceSmart } from "../apply/unifiedDiff";
-import { CommandRunner, CommandUpdateMessage } from "../terminal/commandRunner";
+import { loadBedrockApiKeyFromDotEnv, loadBedrockApiKeyInfos, maskApiKey } from "../config/env";
+import { applyUnifiedDiffToWorkspaceSmart, parseUnifiedDiff, preflightUnifiedDiffAgainstWorkspace } from "../apply/unifiedDiff";
+import { CommandRunner, CommandRunResult, CommandUpdateMessage } from "../terminal/commandRunner";
 
 type WebviewToExtensionMessage =
   | {
@@ -13,7 +13,6 @@ type WebviewToExtensionMessage =
       id: string;
       text: string;
       ts: number;
-      agentMode?: boolean;
       taggedFiles?: string[];
       attachments?: { name: string; text: string }[];
     }
@@ -36,15 +35,8 @@ type WebviewToExtensionMessage =
 type ExtensionToWebviewMessage =
   | { type: "assistantMessage"; id: string; text: string; ts: number; done?: boolean }
   | { type: "error"; message: string; ts: number }
-  | {
-      type: "contextItem";
-      kind: "file" | "attachment";
-      path?: string;
-      label?: string;
-      name?: string;
-      text?: string;
-      ts: number;
-    }
+  | { type: "contextItem"; kind: "file"; path: string; label: string; ts: number }
+  | { type: "contextItem"; kind: "attachment"; name: string; text: string; ts: number }
   | { type: "fileSuggestions"; items: { path: string; label: string }[]; ts: number }
   | CommandUpdateMessage;
 
@@ -55,27 +47,16 @@ function formatApplyError(e: unknown) {
   if (/corrupt patch/i.test(normalized)) {
     return [
       `Safegraph AI: Apply failed: ${normalized}`,
-      "Lỗi là patch AI trả về không đúng format unified diff nên VS Code chưa apply được.",
-      "Cách sửa: bấm Regenerate hoặc hỏi lại: tạo diff sạch, mỗi hunk chỉ có dòng bắt đầu bằng space, + hoặc -.",
-      "Vì sao: nếu trong block diff có chữ giải thích, hoặc số dòng hunk bị lệch quá xa, git sẽ báo corrupt patch."
-    ].join("\n");
-  }
-
-  if (/malformed diff|could not be repaired locally/i.test(normalized)) {
-    return [
-      `Safegraph AI: Apply failed: ${normalized}`,
-      "Lỗi là diff AI tạo ra bị lệch context hoặc sai format quá mức auto-apply chưa sửa được.",
-      "Cách sửa: bấm Regenerate, hoặc yêu cầu AI tạo lại diff nhỏ hơn theo từng file.",
-      "Vì sao: Apply All cần diff có header ---/+++ và hunk @@ hợp lệ để map vào file hiện tại."
+      "Reason: the diff was not a valid unified patch. This can happen when multiple file diffs are split incorrectly, or when model text is mixed into the patch.",
+      "Fix: use Apply All on the combined diff, or ask Safegraph AI to regenerate the patch as a clean ```diff block."
     ].join("\n");
   }
 
   if (/Context mismatch|Delete line mismatch|Hunk out of range|patch does not apply|does not match/i.test(normalized)) {
     return [
       `Safegraph AI: Apply failed: ${normalized}`,
-      "Lỗi là nội dung file hiện tại không còn khớp với diff.",
-      "Cách sửa: hỏi lại AI tạo diff mới dựa trên file hiện tại.",
-      "Vì sao: file đã đổi sau khi AI tạo patch, nên dòng context không tìm thấy nữa."
+      "Reason: the target file changed or the patch context no longer matches your workspace.",
+      "Fix: ask Safegraph AI to regenerate the diff from the current file contents."
     ].join("\n");
   }
 
@@ -90,157 +71,6 @@ function extractDiffBlocks(text: string) {
     if (diff) diffs.push(diff);
   }
   return diffs;
-}
-
-function hasShellFileWrite(text: string) {
-  return /(^|\n)\s*(cat\s+>\s+|tee\s+|touch\s+|echo\s+.+>\s+|printf\s+.+>\s+)/i.test(String(text || ""));
-}
-
-function formatApiKeySource(info: BedrockApiKeyInfo) {
-  return `${info.keyName} from ${info.source}`;
-}
-
-const DROPPED_FOLDER_MAX_FILES = 80;
-const DROPPED_FOLDER_MAX_BYTES = 700 * 1024;
-const DROPPED_TEXT_EXTENSIONS = new Set([
-  ".txt",
-  ".md",
-  ".json",
-  ".js",
-  ".ts",
-  ".tsx",
-  ".jsx",
-  ".css",
-  ".html",
-  ".yaml",
-  ".yml",
-  ".py",
-  ".java",
-  ".c",
-  ".cpp",
-  ".h",
-  ".hpp",
-  ".cs",
-  ".rs",
-  ".go",
-  ".sh",
-  ".ps1",
-  ".cmd",
-  ".toml",
-  ".xml",
-  ".sql"
-]);
-const DROPPED_SKIP_DIRS = new Set([
-  ".git",
-  "node_modules",
-  "dist",
-  "build",
-  "out",
-  "venv",
-  ".venv",
-  "__pycache__",
-  ".next",
-  ".cache"
-]);
-
-function pathBasename(p: string) {
-  return p.split(/[\\/]/).filter(Boolean).pop() || p;
-}
-
-function pathExt(p: string) {
-  const base = pathBasename(p);
-  const idx = base.lastIndexOf(".");
-  return idx >= 0 ? base.slice(idx).toLowerCase() : "";
-}
-
-function uriToWorkspaceLabel(uri: vscode.Uri) {
-  const folder = vscode.workspace.getWorkspaceFolder(uri);
-  return folder ? vscode.workspace.asRelativePath(uri, false) : uri.fsPath || uri.toString();
-}
-
-async function readDroppedPath(uri: vscode.Uri) {
-  const stat = await vscode.workspace.fs.stat(uri);
-  const label = uriToWorkspaceLabel(uri);
-
-  if (stat.type & vscode.FileType.File) {
-    const ext = pathExt(label);
-    if (!DROPPED_TEXT_EXTENSIONS.has(ext)) {
-      return {
-        name: label,
-        text: `[binary or unsupported file dropped: ${label}, ${Math.round(stat.size / 1024)}KB]`
-      };
-    }
-    if (stat.size > DROPPED_FOLDER_MAX_BYTES) {
-      return {
-        name: label,
-        text: `[file too large to attach: ${label}, max ${Math.round(DROPPED_FOLDER_MAX_BYTES / 1024)}KB]`
-      };
-    }
-    const bytes = await vscode.workspace.fs.readFile(uri);
-    return { name: label, text: Buffer.from(bytes).toString("utf8") };
-  }
-
-  if (!(stat.type & vscode.FileType.Directory)) {
-    return { name: label, text: `[unsupported dropped item: ${label}]` };
-  }
-
-  const files: { uri: vscode.Uri; label: string; size: number }[] = [];
-  const walk = async (dir: vscode.Uri) => {
-    if (files.length >= DROPPED_FOLDER_MAX_FILES) return;
-    let entries: [string, vscode.FileType][] = [];
-    try {
-      entries = await vscode.workspace.fs.readDirectory(dir);
-    } catch {
-      return;
-    }
-
-    for (const [name, type] of entries) {
-      if (files.length >= DROPPED_FOLDER_MAX_FILES) break;
-      if (DROPPED_SKIP_DIRS.has(name)) continue;
-      const child = vscode.Uri.joinPath(dir, name);
-      if (type & vscode.FileType.Directory) {
-        await walk(child);
-        continue;
-      }
-      if (!(type & vscode.FileType.File)) continue;
-      const childLabel = uriToWorkspaceLabel(child);
-      if (!DROPPED_TEXT_EXTENSIONS.has(pathExt(childLabel))) continue;
-      try {
-        const childStat = await vscode.workspace.fs.stat(child);
-        if (childStat.size <= DROPPED_FOLDER_MAX_BYTES) {
-          files.push({ uri: child, label: childLabel, size: childStat.size });
-        }
-      } catch {
-        // ignore unreadable files
-      }
-    }
-  };
-
-  await walk(uri);
-
-  let used = 0;
-  const parts = [`Dropped folder: ${label}`, `Included files: ${files.length}`];
-  for (const file of files) {
-    if (used >= DROPPED_FOLDER_MAX_BYTES) break;
-    try {
-      const bytes = await vscode.workspace.fs.readFile(file.uri);
-      const remaining = Math.max(0, DROPPED_FOLDER_MAX_BYTES - used);
-      const text = Buffer.from(bytes).toString("utf8").slice(0, remaining);
-      used += text.length;
-      parts.push(`\n--- ${file.label} ---\n${text}`);
-    } catch {
-      parts.push(`\n--- ${file.label} (unreadable) ---`);
-    }
-  }
-
-  if (files.length >= DROPPED_FOLDER_MAX_FILES) {
-    parts.push(`\n[Folder truncated at ${DROPPED_FOLDER_MAX_FILES} files]`);
-  }
-  if (used >= DROPPED_FOLDER_MAX_BYTES) {
-    parts.push(`\n[Folder content truncated at ${Math.round(DROPPED_FOLDER_MAX_BYTES / 1024)}KB]`);
-  }
-
-  return { name: label, text: parts.join("\n") };
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -281,13 +111,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.output.appendLine(`[safegraph-ai] failed to read version: ${String(e)}`);
     }
 
-    const agentModeDefault = Boolean(vscode.workspace.getConfiguration("safegraph").get("agentModeDefault", true));
-    webviewView.webview.html = getChatWebviewHtml(
-      webviewView.webview,
-      this.context.extensionUri,
-      version,
-      agentModeDefault
-    );
+    webviewView.webview.html = getChatWebviewHtml(webviewView.webview, this.context.extensionUri, version);
 
     webviewView.webview.onDidReceiveMessage(async (msg: WebviewToExtensionMessage) => {
       if (msg.type === "ready") return;
@@ -314,123 +138,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
       if (msg.type === "pickFilesOrFolders") {
-        const picked = await vscode.window.showOpenDialog({
-          canSelectFiles: true,
-          canSelectFolders: true,
-          canSelectMany: true,
-          openLabel: "Attach to Safegraph AI"
-        });
-        for (const uri of picked || []) {
-          try {
-            const item = await readDroppedPath(uri);
-            webviewView.webview.postMessage({
-              type: "contextItem",
-              kind: "attachment",
-              name: item.name,
-              text: item.text,
-              ts: Date.now()
-            } satisfies ExtensionToWebviewMessage);
-            this.output.appendLine(`[safegraph-ai] picked item attached: ${maskSensitive(item.name)}`);
-          } catch (e) {
-            webviewView.webview.postMessage({
-              type: "error",
-              message: `Could not attach selected item: ${maskSensitive(uri.fsPath)} (${String(e)})`,
-              ts: Date.now()
-            } satisfies ExtensionToWebviewMessage);
-          }
-        }
+        await this.pickFilesOrFolders(webviewView.webview);
         return;
       }
       if (msg.type === "addActiveFile") {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor || editor.document.uri.scheme !== "file") {
-          webviewView.webview.postMessage({
-            type: "error",
-            message: "No active file editor to add.",
-            ts: Date.now()
-          } satisfies ExtensionToWebviewMessage);
-          return;
-        }
-
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
-        const path = workspaceFolder
-          ? vscode.workspace.asRelativePath(editor.document.uri, false)
-          : editor.document.uri.fsPath;
-        webviewView.webview.postMessage({
-          type: "contextItem",
-          kind: "file",
-          path,
-          label: path.split(/[\\/]/).slice(-2).join("/"),
-          ts: Date.now()
-        } satisfies ExtensionToWebviewMessage);
+        this.addActiveFile(webviewView.webview);
         return;
       }
       if (msg.type === "addSelection") {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor) {
-          webviewView.webview.postMessage({
-            type: "error",
-            message: "No active editor selection to add.",
-            ts: Date.now()
-          } satisfies ExtensionToWebviewMessage);
-          return;
-        }
-
-        const selectionText = editor.document.getText(editor.selection).trim();
-        if (!selectionText) {
-          webviewView.webview.postMessage({
-            type: "error",
-            message: "Select code in the editor first, then click Selection.",
-            ts: Date.now()
-          } satisfies ExtensionToWebviewMessage);
-          return;
-        }
-
-        const rel = vscode.workspace.asRelativePath(editor.document.uri, false);
-        const start = editor.selection.start;
-        webviewView.webview.postMessage({
-          type: "contextItem",
-          kind: "attachment",
-          name: `${rel}:${start.line + 1}`,
-          text: selectionText,
-          ts: Date.now()
-        } satisfies ExtensionToWebviewMessage);
+        this.addSelection(webviewView.webview);
         return;
       }
       if (msg.type === "droppedUris") {
-        const uris = (msg.uris || []).slice(0, 8);
-        if (uris.length === 0) return;
-
-        for (const raw of uris) {
-          try {
-            const uri = raw.startsWith("file:") || raw.startsWith("vscode-remote:")
-              ? vscode.Uri.parse(raw)
-              : vscode.Uri.file(raw);
-            const item = await readDroppedPath(uri);
-            webviewView.webview.postMessage({
-              type: "contextItem",
-              kind: "attachment",
-              name: item.name,
-              text: item.text,
-              ts: Date.now()
-            } satisfies ExtensionToWebviewMessage);
-            this.output.appendLine(`[safegraph-ai] dropped URI attached: ${maskSensitive(item.name)}`);
-          } catch (e) {
-            const message = `Could not attach dropped item: ${maskSensitive(raw)} (${String(e)})`;
-            this.output.appendLine(`[safegraph-ai] ${message}`);
-            webviewView.webview.postMessage({
-              type: "error",
-              message,
-              ts: Date.now()
-            } satisfies ExtensionToWebviewMessage);
-          }
-        }
+        await this.addDroppedUris(webviewView.webview, msg.uris || []);
         return;
       }
       if (msg.type === "applyDiff") {
         try {
-          await applyUnifiedDiffToWorkspaceSmart(msg.diff, this.output);
-          vscode.window.showInformationMessage("Safegraph AI: Applied changes.");
+          await this.applyDiffWithRepair(msg.diff, "Manual Apply All");
+          vscode.window.showInformationMessage("Safegraph AI: Applied validated changes.");
         } catch (e) {
           const formatted = formatApplyError(e);
           this.output.appendLine(`[safegraph-ai] applyDiff failed: ${formatted}`);
@@ -446,6 +172,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (msg.type === "suggestFiles") {
         try {
           const query = (msg.query || "").toLowerCase();
+          const specialItems =
+            query.length > 0 && ("repository".includes(query) || "repo".includes(query))
+              ? [{ path: "@Repository", label: "Repository" }]
+              : [];
           const files = await vscode.workspace.findFiles(
             "**/*",
             "**/{node_modules,.git,dist,build,out,venv,.venv}/**",
@@ -459,7 +189,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           const resp: ExtensionToWebviewMessage = {
             type: "fileSuggestions",
-            items: filtered,
+            items: [...specialItems, ...filtered],
             ts: Date.now()
           };
           webviewView.webview.postMessage(resp);
@@ -479,39 +209,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
       if (msg.type === "userMessage") {
-        let apiKeySource = "unknown";
-        const postStatus = (text: string) => {
-          webviewView.webview.postMessage({
-            type: "assistantMessage",
-            id: msg.id,
-            text,
-            ts: Date.now(),
-            done: false
-          } satisfies ExtensionToWebviewMessage);
-        };
         try {
           this.currentAbort?.abort();
           this.currentAbort = new AbortController();
           this.autoRunDoneFor.delete(msg.id);
 
-          postStatus("Checking Bedrock credentials...");
-          const apiKeyInfos = await loadBedrockApiKeyInfos([this.context.extensionUri.fsPath]);
-          const secretKey = await this.context.secrets.get("safegraph.bedrockApiKey");
-          if (secretKey) {
-            apiKeyInfos.push({
-              value: secretKey,
-              keyName: "safegraph.bedrockApiKey",
-              source: "VS Code SecretStorage"
-            });
+          let apiKey = (await this.context.secrets.get("safegraph.bedrockApiKey")) || "";
+          if (!apiKey) {
+            const envKey = await loadBedrockApiKeyFromDotEnv([this.context.extensionUri.fsPath]);
+            if (envKey) {
+              apiKey = envKey;
+              await this.context.secrets.store("safegraph.bedrockApiKey", apiKey);
+              this.output.appendLine("[safegraph-ai] loaded Bedrock API key from .env into SecretStorage");
+            }
           }
-          if (apiKeyInfos.length > 0) {
-            this.output.appendLine(
-              `[safegraph-ai] found ${apiKeyInfos.length} Bedrock API key candidate(s): ${apiKeyInfos
-                .map((k) => `${k.keyName} from ${k.source} (${maskApiKey(k.value)})`)
-                .join(", ")}`
-            );
-          }
-          if (apiKeyInfos.length === 0) {
+          if (!apiKey) {
             const err: ExtensionToWebviewMessage = {
               type: "error",
               message:
@@ -524,17 +236,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           const cfg = vscode.workspace.getConfiguration("safegraph");
           const region = String(cfg.get("region") || "ap-southeast-1");
-          const autoRunMode = String(cfg.get("autoRun") || "safe");
           const modelId = String(
             cfg.get("modelId") ||
               "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
           );
 
-          postStatus("Reading workspace context...");
           const ctx = await buildContext({
-            maxChars: 8000,
+            maxChars: 24000,
             maxFiles: 80,
-            includeFiles: msg.taggedFiles || []
+            includeFiles: (msg.taggedFiles || []).filter((p) => p !== "@Repository"),
+            query: msg.text,
+            storageUri: this.context.globalStorageUri,
+            includeRepository: true
           });
           const maskedCtx = maskSensitive(ctx);
           const maskedQuestion = maskSensitive(msg.text);
@@ -552,32 +265,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             .filter((a) => a.text.trim().length > 0);
 
           const prompt =
-            `You are Safegraph AI, an intelligent VS Code assistant. You provide expert help with:
+            `You are Safegraph AI, an autonomous senior software engineer inside VS Code with 20 years of production experience. You provide expert help with:
 - Code analysis, refactoring, and best practices
 - Bug fixing and debugging
 - Feature implementation and architecture design
 - Testing, documentation, and code quality
 - Terminal commands and build systems
+- Product requirement analysis, UX design, UI mockups, and implementation-ready frontend design
 
 RESPONSE GUIDELINES:
 1. Reply in the same language as the user. If the user writes Vietnamese, use clear Vietnamese.
-2. Do not introduce yourself unless asked. For greetings like "hi", answer in one short sentence and ask what they want to do.
-3. Write like an IDE assistant: direct, concise, and action-oriented. Avoid long capability lists.
-4. Start with the fix or next action. Then give a short reason only if it helps the user make the right choice.
-5. Prefer concrete steps: what file to open, what command to run, what URL to visit, or what button to click.
-6. When explaining an error, use this shape: "Lỗi là...", "Cách sửa...", "Vì sao...". Keep each part short.
-7. For code changes, file creation, folder structure changes, or content edits, ALWAYS provide a complete unified diff in a fenced code block marked 'diff'. Safegraph applies diff blocks automatically in Agent Mode.
-8. Diff blocks must contain only valid unified diff lines. Never put explanations inside a diff block. Every hunk body line must start with one of: space, +, -.
-9. Do NOT create or edit project files with terminal heredocs or shell text-writing commands such as cat > file <<EOF, echo > file, tee, printf > file, or touch. Use a diff block instead.
-10. For terminal commands, include only commands used to install dependencies, run apps, run tests, or inspect the project. Put ONLY exact commands (one per line) in a fenced code block marked 'sh'.
+2. Act like a pragmatic staff engineer: diagnose root causes, choose a maintainable fix, consider edge cases, and avoid fragile quick hacks unless the user clearly needs a temporary workaround.
+3. Own the problem end-to-end. Do not stop at suggestions when a code change can solve it. Create/update files, propose safe verification commands, and make the project runnable.
+4. Ask questions only when the decision is high-risk, security-sensitive, destructive, costly, or materially changes product direction. For ordinary missing details, make a conservative assumption and proceed.
+5. Write for a normal developer using VS Code, not for a framework expert. Avoid academic headings like "Issue Analysis" unless the user asks for a report.
+6. Start with the fix or next action. Then give a short reason only if it helps the user make the right choice.
+7. Prefer concrete steps: what file to open, what command to run, what URL to visit, or what button to click.
+8. When explaining an error, use this shape: "Lỗi là...", "Cách sửa...", "Vì sao...". Keep each part short.
+9. For code changes, ALWAYS provide a complete unified diff in a fenced code block marked 'diff'. Safegraph will validate and apply it automatically.
+10. For terminal commands, put ONLY exact commands (one per line) in a fenced code block marked 'sh'. Safegraph will run safe commands automatically and ask only for sensitive commands.
 11. Use the file paths relative to workspace root.
 12. For new files: use --- /dev/null and +++ b/<path>.
 13. For deleted files: use --- a/<path> and +++ /dev/null.
-14. Prefer smaller per-file hunks over one huge patch when editing existing files.
-15. Do not dump long explanations when a simple action is enough.
-16. Current terminal setting: safegraph.autoRun=${autoRunMode}. In "safe" mode, allowlisted commands run automatically and other commands trigger a VS Code confirmation dialog. In "ask" mode, every command asks. In "off" mode, no command runs automatically.
-17. For Python virtualenv workflows, prefer commands that do not require persistent shell activation, for example: python3.12 -m venv venv, venv/bin/python -m pip install ..., venv/bin/python app.py, venv/bin/python -m streamlit run app.py.
-${msg.agentMode ? `18. AGENT MODE IS ON. Do not only give instructions. If the task requires creating app.py, templates, static files, config files, or any project structure, output the actual unified diff so Safegraph can apply it. After the diff, provide only safe verification/run commands that Safegraph can execute or ask permission for.` : ""}
+14. Analyze the user's real goal before coding. If details are missing, make conservative product/design assumptions and proceed; ask only when a wrong assumption could cause data loss, security risk, cost, or a materially different product.
+15. If the user only pasted an error, traceback, terminal output, failing test, malformed diff, or code snippet without saying what they want, infer the request as: diagnose it, locate the relevant file(s), fix the underlying issue, and validate the fix. Do not ask "what do you want me to do?" for pasted bugs.
+16. If the user pasted only code, infer whether it is incomplete, duplicated, malformed, or should replace the active file. Use active file/workspace context to decide. Fix syntax/integration issues instead of echoing the code back.
+17. For UI/product tasks, act as a product designer and frontend engineer: infer target users, main workflow, information hierarchy, empty/loading/error states, responsive behavior, accessibility, and visual style before implementation.
+18. If the user asks for a mockup, design, website, dashboard, app screen, or UI improvement, create an implementable mockup in code. Prefer editing/creating real project files such as HTML/CSS/JS/React components. If the repo has no app structure, create a minimal runnable mockup.
+19. For frontend design, use existing project conventions first. Build the actual usable screen, not a marketing explanation. Avoid generic one-color themes, oversized decorative cards, and visible text explaining how to use the UI.
+20. Make UI complete enough to inspect: realistic labels/data, responsive layout, clear primary actions, hover/focus states, error/empty/loading states where relevant.
+21. Before giving final text, make the code complete enough to run. Include verification commands after the diff when useful.
+22. Do not dump long explanations when a simple action is enough.
 
 CONTEXT:
 ${maskedCtx}
@@ -591,7 +309,7 @@ ${maskedQuestion}`;
           const thinking: ExtensionToWebviewMessage = {
             type: "assistantMessage",
             id: msg.id,
-            text: "Calling Bedrock... (timeout 60s)",
+            text: "",
             ts: Date.now(),
             done: false
           };
@@ -602,43 +320,47 @@ ${maskedQuestion}`;
           let loops = 0;
           let nextPrompt = prompt;
           for (;;) {
-            let r = null as Awaited<ReturnType<typeof bedrockConverse>> | null;
-            let lastExpiredSource = "";
-            for (const info of apiKeyInfos) {
-              apiKeySource = formatApiKeySource(info);
-              try {
-                postStatus(`Calling Bedrock with ${info.keyName}... (timeout 60s)`);
-                this.output.appendLine(
-                  `[safegraph-ai] trying Bedrock API key ${maskApiKey(info.value)} from ${apiKeySource}`
-                );
-                r = await bedrockConverse(nextPrompt, {
-                  region,
-                  modelId,
-                  apiKey: info.value,
-                  signal: this.currentAbort.signal,
-                  retries: 0
-                });
-                break;
-              } catch (e) {
-                if (!isExpiredBearerTokenError(e)) throw e;
-                lastExpiredSource = apiKeySource;
-                this.output.appendLine(`[safegraph-ai] expired Bedrock API key from ${apiKeySource}; trying next key`);
-              }
-            }
-            if (!r) {
-              throw new Error(
-                `All Bedrock API key candidates are expired. Last expired key source: ${lastExpiredSource || apiKeySource}`
-              );
-            }
+            const r = await bedrockConverse(nextPrompt, {
+              region,
+              modelId,
+              apiKey,
+              signal: this.currentAbort.signal,
+              maxTokens: 8192,
+              temperature: 0.2
+            });
             combined = (combined + (combined ? "\n" : "") + r.text).trim();
             loops += 1;
             if (this.currentAbort.signal.aborted) throw new Error("aborted");
             if (r.stopReason !== "max_tokens") break;
             if (loops >= 3) break;
             nextPrompt =
-              "Continue from where you left off. Do not repeat earlier text.\n\nPrevious output:\n" +
+              prompt +
+              "\n\nContinue from where you left off. Do not repeat earlier text. Keep following the original unified-diff and safe-command rules.\n\nPrevious output:\n" +
               combined +
               "\n\nContinue:";
+          }
+
+          const diffBlocks = extractDiffBlocks(combined);
+          let appliedDiff = false;
+          if (diffBlocks.length > 0) {
+            await this.applyDiffWithRepair(
+              diffBlocks.join("\n\n"),
+              "Autonomous chat code changes"
+            );
+            appliedDiff = true;
+            combined += "\n\nAgent: đã validate và apply code vào workspace.";
+          }
+
+          if (appliedDiff) {
+            const loopResult = await this.runAgentVerificationLoop({
+              initialAssistantText: combined,
+              userText: msg.text,
+              apiKey,
+              region,
+              modelId,
+              webview: webviewView.webview
+            });
+            if (loopResult) combined += `\n\n${loopResult}`;
           }
 
           let acc = "";
@@ -671,37 +393,6 @@ ${maskedQuestion}`;
             this.history = this.history.slice(-16);
           }
 
-          if (msg.agentMode) {
-            const diffs = extractDiffBlocks(acc);
-            if (diffs.length > 0) {
-              try {
-                await applyUnifiedDiffToWorkspaceSmart(diffs.join("\n\n"), this.output);
-                webviewView.webview.postMessage({
-                  type: "assistantMessage",
-                  id: `${msg.id}-agent-apply`,
-                  text: "Agent: đã apply diff vào workspace.",
-                  ts: Date.now(),
-                  done: true
-                } satisfies ExtensionToWebviewMessage);
-              } catch (e) {
-                const formatted = formatApplyError(e);
-                this.output.appendLine(`[safegraph-ai] agent apply failed: ${formatted}`);
-                webviewView.webview.postMessage({
-                  type: "error",
-                  message: formatted,
-                  ts: Date.now()
-                });
-              }
-            } else if (hasShellFileWrite(acc)) {
-              webviewView.webview.postMessage({
-                type: "error",
-                message:
-                  "Agent cần tạo/sửa file bằng diff để Safegraph tự apply. AI vừa trả về lệnh ghi file bằng terminal, nên extension đã không tự chạy. Hãy gửi lại yêu cầu hoặc bật Agent và yêu cầu tạo unified diff.",
-                ts: Date.now()
-              });
-            }
-          }
-
           // Cursor-like behavior: propose terminal commands in UI (no terminal panel pop).
           if (!this.autoRunDoneFor.has(msg.id)) {
             this.autoRunDoneFor.add(msg.id);
@@ -716,49 +407,460 @@ ${maskedQuestion}`;
                 if (item.decision === "allow") {
                   this.cmdRunner.run(item.id, item.cmd, cwd, (m) => webviewView.webview.postMessage(m));
                 } else if (item.decision === "ask") {
-                  const ok = await vscode.window.showWarningMessage(
-                    `Safegraph AI muốn chạy command:\n\n${item.cmd}\n\nLý do: ${item.reason}`,
-                    { modal: true },
-                    "Run"
-                  );
-                  if (ok === "Run") {
-                    this.cmdRunner.run(item.id, item.cmd, cwd, (m) => webviewView.webview.postMessage(m));
-                  } else {
-                    webviewView.webview.postMessage({
-                      type: "commandUpdate",
-                      id: item.id,
-                      status: "denied",
-                      output: "Command skipped by user.",
-                      ts: Date.now()
-                    } satisfies ExtensionToWebviewMessage);
-                  }
+                  this.output.appendLine(`[safegraph-ai] command requires inline approval: ${item.cmd} (${item.reason})`);
                 }
               }
             }
           }
         } catch (e) {
-          this.output.appendLine(`[safegraph-ai] bedrock error: ${String(e)}`);
-          if (/aborted/i.test(String(e))) {
+          if (String(e instanceof Error ? e.message : e).toLowerCase().includes("aborted")) {
+            this.output.appendLine("[safegraph-ai] request aborted by user");
             return;
           }
-          let message = String(e);
-          if (isExpiredBearerTokenError(e)) {
-            await this.context.secrets.delete("safegraph.bedrockApiKey");
-            message =
-              `Bedrock API key da het han. Extension vua dung key tu: ${apiKeySource}. Tao key moi trong AWS Console, cap nhat AWS_BEARER_TOKEN_BEDROCK/API_KEY trong .env hoac chay 'Safegraph AI: Set Bedrock API Key', roi thu lai.`;
-          } else if (/All Bedrock API key candidates are expired/i.test(message)) {
-            await this.context.secrets.delete("safegraph.bedrockApiKey");
-            message =
-              `${message}. Hay xoa key cu trong .env hoac cap nhat tat ca cac bien AWS_BEARER_TOKEN_BEDROCK/API_KEY bang key moi.`;
-          }
+          this.output.appendLine(`[safegraph-ai] bedrock error: ${String(e)}`);
           const err: ExtensionToWebviewMessage = {
             type: "error",
-            message,
+            message: String(e),
             ts: Date.now()
           };
           webviewView.webview.postMessage(err);
         }
       }
     });
+  }
+
+  private async loadApiKey() {
+    let apiKey = (await this.context.secrets.get("safegraph.bedrockApiKey")) || "";
+    if (!apiKey) {
+      const envKey = await loadBedrockApiKeyFromDotEnv([this.context.extensionUri.fsPath]);
+      if (envKey) {
+        apiKey = envKey;
+        await this.context.secrets.store("safegraph.bedrockApiKey", apiKey);
+        this.output.appendLine("[safegraph-ai] loaded Bedrock API key from .env into SecretStorage");
+      }
+    }
+    return apiKey;
+  }
+
+  async checkApiKeyStatus() {
+    const secretKey = (await this.context.secrets.get("safegraph.bedrockApiKey")) || "";
+    const envInfos = await loadBedrockApiKeyInfos([this.context.extensionUri.fsPath]);
+
+    const lines: string[] = [];
+    if (secretKey) {
+      lines.push(`SecretStorage: ${maskApiKey(secretKey)}`);
+    } else {
+      lines.push("SecretStorage: empty");
+    }
+
+    if (envInfos.length) {
+      lines.push("Detected .env/process keys:");
+      for (const info of envInfos) {
+        lines.push(`- ${info.keyName} from ${info.source}: ${maskApiKey(info.value)}`);
+      }
+    } else {
+      lines.push("Detected .env/process keys: none");
+    }
+
+    const effective = secretKey ? "VS Code SecretStorage" : envInfos[0]?.source;
+    if (effective) {
+      vscode.window.showInformationMessage(`Safegraph AI: Bedrock key found from ${effective}.`);
+    } else {
+      vscode.window.showWarningMessage("Safegraph AI: No Bedrock API key found.");
+    }
+
+    this.output.appendLine("[safegraph-ai] Bedrock API key status");
+    this.output.appendLine(lines.join("\n"));
+    this.output.show(true);
+  }
+
+  openLog() {
+    this.output.show(true);
+  }
+
+  private workspaceRelativePath(uri: vscode.Uri) {
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    if (!folder) return uri.fsPath;
+    const relative = vscode.workspace.asRelativePath(uri, false);
+    return relative || uri.fsPath;
+  }
+
+  private labelForUri(uri: vscode.Uri) {
+    const parts = this.workspaceRelativePath(uri).split(/[\\/]/).filter(Boolean);
+    return parts.slice(-2).join("/") || uri.fsPath.split(/[\\/]/).pop() || uri.fsPath;
+  }
+
+  private postFileContext(webview: vscode.Webview, uri: vscode.Uri) {
+    webview.postMessage({
+      type: "contextItem",
+      kind: "file",
+      path: this.workspaceRelativePath(uri),
+      label: this.labelForUri(uri),
+      ts: Date.now()
+    } satisfies ExtensionToWebviewMessage);
+  }
+
+  private async postAttachmentContext(webview: vscode.Webview, uri: vscode.Uri) {
+    const stat = await vscode.workspace.fs.stat(uri);
+    const maxBytes = 200 * 1024;
+    if (stat.size > maxBytes) {
+      vscode.window.showWarningMessage(`Safegraph AI: skipped ${uri.fsPath}; file is larger than 200KB.`);
+      return;
+    }
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    const text = Buffer.from(bytes).toString("utf8");
+    if (text.includes("\u0000")) {
+      vscode.window.showWarningMessage(`Safegraph AI: skipped binary file ${uri.fsPath}.`);
+      return;
+    }
+    webview.postMessage({
+      type: "contextItem",
+      kind: "attachment",
+      name: this.labelForUri(uri),
+      text,
+      ts: Date.now()
+    } satisfies ExtensionToWebviewMessage);
+  }
+
+  private async addUriContext(webview: vscode.Webview, uri: vscode.Uri) {
+    if (uri.scheme !== "file") return;
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    if (folder) {
+      this.postFileContext(webview, uri);
+    } else {
+      await this.postAttachmentContext(webview, uri);
+    }
+  }
+
+  private async pickFilesOrFolders(webview: vscode.Webview) {
+    const uris = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: true,
+      openLabel: "Attach to Safegraph AI"
+    });
+    for (const uri of uris || []) {
+      await this.addUriContext(webview, uri);
+    }
+  }
+
+  private addActiveFile(webview: vscode.Webview) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showWarningMessage("Safegraph AI: no active editor file.");
+      return;
+    }
+    this.postFileContext(webview, editor.document.uri);
+  }
+
+  private addSelection(webview: vscode.Webview) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.selection.isEmpty) {
+      vscode.window.showWarningMessage("Safegraph AI: no selected text.");
+      return;
+    }
+    webview.postMessage({
+      type: "contextItem",
+      kind: "attachment",
+      name: `${this.labelForUri(editor.document.uri)} selection`,
+      text: editor.document.getText(editor.selection),
+      ts: Date.now()
+    } satisfies ExtensionToWebviewMessage);
+  }
+
+  private async addDroppedUris(webview: vscode.Webview, rawUris: string[]) {
+    let accepted = 0;
+    for (const raw of rawUris.slice(0, 40)) {
+      try {
+        const text = String(raw || "").trim();
+        if (!text) continue;
+        const uri = text.startsWith("file:") ? vscode.Uri.parse(text) : vscode.Uri.file(text);
+        await this.addUriContext(webview, uri);
+        accepted += 1;
+      } catch (error) {
+        this.output.appendLine(`[safegraph-ai] dropped URI ignored: ${String(raw)} (${String(error)})`);
+      }
+    }
+    if (accepted === 0) {
+      vscode.window.showWarningMessage("Safegraph AI: drop was received, but no readable file URI was found.");
+    }
+  }
+
+  private modelConfig() {
+    const cfg = vscode.workspace.getConfiguration("safegraph");
+    return {
+      region: String(cfg.get("region") || "ap-southeast-1"),
+      modelId: String(
+        cfg.get("modelId") ||
+          "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
+      )
+    };
+  }
+
+  private async converseComplete(prompt: string, options: { region: string; modelId: string; apiKey: string; maxTokens?: number; temperature?: number }) {
+    let combined = "";
+    let loops = 0;
+    let nextPrompt = prompt;
+    for (;;) {
+      const r = await bedrockConverse(nextPrompt, {
+        region: options.region,
+        modelId: options.modelId,
+        apiKey: options.apiKey,
+        signal: this.currentAbort?.signal,
+        maxTokens: options.maxTokens ?? 8192,
+        temperature: options.temperature ?? 0.15
+      });
+      combined = (combined + (combined ? "\n" : "") + r.text).trim();
+      loops += 1;
+      if (this.currentAbort?.signal.aborted) throw new Error("aborted");
+      if (r.stopReason !== "max_tokens" || loops >= 2) break;
+      nextPrompt = `${prompt}\n\nContinue from where you left off. Do not repeat earlier text.\n\nPrevious output:\n${combined}\n\nContinue:`;
+    }
+    return combined;
+  }
+
+  private async runAgentVerificationLoop(options: {
+    initialAssistantText: string;
+    userText: string;
+    apiKey: string;
+    region: string;
+    modelId: string;
+    webview: vscode.Webview;
+  }) {
+    const cfg = vscode.workspace.getConfiguration("safegraph");
+    const mode = String(cfg.get("autoRun") || "safe") as any;
+    const maxLoops = Math.max(0, Math.min(3, Number(cfg.get("agent.maxFixLoops", 2))));
+    if (maxLoops <= 0) return "";
+
+    const folders = vscode.workspace.workspaceFolders;
+    const cwd = folders?.[0]?.uri.fsPath || process.cwd();
+    let assistantText = options.initialAssistantText;
+    const notes: string[] = [];
+
+    for (let loop = 1; loop <= maxLoops; loop += 1) {
+      const proposed = this.cmdRunner.proposeFromAssistantText(assistantText, mode);
+      const runnable = proposed.filter((item) => item.decision === "allow");
+      const askOrDenied = proposed.filter((item) => item.decision !== "allow");
+      if (askOrDenied.length > 0) {
+        options.webview.postMessage({ type: "commandProposed", items: askOrDenied, ts: Date.now() });
+      }
+      if (runnable.length === 0) {
+        if (loop === 1) notes.push("Agent verify: không có lệnh safe auto-run trong phản hồi.");
+        break;
+      }
+
+      options.webview.postMessage({ type: "commandProposed", items: runnable, ts: Date.now() });
+      const results: CommandRunResult[] = [];
+      for (const item of runnable.slice(0, 4)) {
+        if (this.currentAbort?.signal.aborted) throw new Error("aborted");
+        const result = await this.cmdRunner.runAndWait(item.id, item.cmd, cwd, (m) => options.webview.postMessage(m));
+        results.push(result);
+        if (result.status !== "success") break;
+      }
+
+      const failed = results.find((r) => r.status !== "success");
+      if (!failed) {
+        notes.push(`Agent verify loop ${loop}: ${results.length} command(s) passed.`);
+        break;
+      }
+
+      notes.push(`Agent verify loop ${loop}: command failed: ${failed.cmd}`);
+      const terminalLog = failed.output.slice(-12000);
+      const ctx = await buildContext({
+        maxChars: 24000,
+        maxFiles: 80,
+        query: `${options.userText}\n${failed.cmd}\n${terminalLog}`,
+        storageUri: this.context.globalStorageUri,
+        includeRepository: true
+      });
+      const repairPrompt = `You are Safegraph AI continuing an autonomous edit-test-fix loop in VS Code.
+The previous code changes were applied, then this verification command failed.
+Return ONLY:
+1. A clean fenced \`\`\`diff block if a code/config change is needed.
+2. Safe verification commands in a fenced \`\`\`sh block.
+No long explanation.
+
+Original user request:
+${maskSensitive(options.userText)}
+
+Failed command:
+${failed.cmd}
+
+Terminal log:
+\`\`\`
+${maskSensitive(terminalLog)}
+\`\`\`
+
+Workspace context:
+${maskSensitive(ctx)}`;
+
+      const repair = await this.converseComplete(repairPrompt, {
+        region: options.region,
+        modelId: options.modelId,
+        apiKey: options.apiKey,
+        maxTokens: 8192,
+        temperature: 0.1
+      });
+      const diffs = extractDiffBlocks(repair);
+      if (diffs.length === 0) {
+        notes.push(`Agent verify loop ${loop}: model did not return a repair diff.`);
+        assistantText = repair;
+        break;
+      }
+
+      await this.applyDiffWithRepair(diffs.join("\n\n"), `Agent verification repair loop ${loop}`);
+      notes.push(`Agent verify loop ${loop}: applied repair diff.`);
+      assistantText = repair;
+    }
+
+    return notes.length ? notes.join("\n") : "";
+  }
+
+  private async repairDiffWithBedrock(diff: string, errorMessage: string, reason: string) {
+    const apiKey = await this.loadApiKey();
+    if (!apiKey) throw new Error(`Cannot repair diff automatically: missing Bedrock API key. Original error: ${errorMessage}`);
+
+    const { region, modelId } = this.modelConfig();
+    const ctx = await buildContext({
+      maxChars: 24000,
+      maxFiles: 80
+    });
+    const currentFiles = await this.currentFilesForDiff(diff);
+
+    const prompt = `You are repairing a unified diff before it is applied in VS Code.
+Return ONLY one clean fenced code block marked diff. No explanation outside the diff block.
+
+Rules:
+- Use valid unified diff syntax only.
+- Every hunk body line must start with exactly one of: space, +, -.
+- Regenerate the patch against the CURRENT FILE CONTENTS below, not against stale context from the invalid diff.
+- If the original patch intent is already present in the current file, return an empty diff block.
+- Do not include stale retry text, duplicate imports, or raw hunk markers as code.
+- Do not include terminal commands.
+- Preserve the user's intended change, but prefer a smaller safe patch if unsure.
+- For Python files, the resulting file must pass py_compile.
+
+Reason: ${reason}
+Preflight/apply error:
+${errorMessage}
+
+Workspace context:
+${maskSensitive(ctx)}
+
+Current target file contents:
+${currentFiles || "(No target file contents could be read.)"}
+
+Invalid diff:
+\`\`\`diff
+${diff}
+\`\`\``;
+
+    const repaired = await bedrockConverse(prompt, {
+      region,
+      modelId,
+      apiKey,
+      maxTokens: 8192,
+      temperature: 0.1,
+      signal: this.currentAbort?.signal
+    });
+
+    const match = repaired.text.match(/```diff\s*([\s\S]*?)```/i);
+    const repairedDiff = (match ? match[1] : repaired.text).trim();
+    if (!repairedDiff) throw new Error(`Diff repair returned empty output. Original error: ${errorMessage}`);
+    return repairedDiff;
+  }
+
+  private async currentFilesForDiff(diff: string) {
+    try {
+      const folders = vscode.workspace.workspaceFolders;
+      if (!folders?.length) return "";
+      const root = folders[0].uri;
+      const patches = parseUnifiedDiff(diff);
+      const parts: string[] = [];
+      for (const patch of patches.slice(0, 6)) {
+        if (patch.kind === "create") {
+          parts.push(`--- ${patch.filePath} (new file) ---\n(file does not exist yet)`);
+          continue;
+        }
+        const uri = vscode.Uri.joinPath(root, patch.filePath);
+        try {
+          const bytes = await vscode.workspace.fs.readFile(uri);
+          const text = Buffer.from(bytes).toString("utf8");
+          const body =
+            text.length > 50_000
+              ? `${text.slice(0, 25_000)}\n\n[...middle truncated...]\n\n${text.slice(-20_000)}`
+              : text;
+          parts.push(`--- ${patch.filePath} (current) ---\n${maskSensitive(body)}`);
+        } catch {
+          parts.push(`--- ${patch.filePath} (current) ---\n(unreadable or missing)`);
+        }
+      }
+      return parts.join("\n\n");
+    } catch (error) {
+      this.output.appendLine(`[safegraph-ai] failed to collect current files for diff repair: ${String(error)}`);
+      return "";
+    }
+  }
+
+  private async prepareDiffForApply(diff: string, reason: string) {
+    try {
+      await preflightUnifiedDiffAgainstWorkspace(diff);
+      return diff;
+    } catch (firstError) {
+      const firstMessage = String(firstError instanceof Error ? firstError.message : firstError);
+      this.output.appendLine(`[safegraph-ai] preflight failed before apply: ${firstMessage}`);
+
+      const repairedDiff = await this.repairDiffWithBedrock(diff, firstMessage, reason);
+      try {
+        await preflightUnifiedDiffAgainstWorkspace(repairedDiff);
+        this.output.appendLine("[safegraph-ai] repaired diff passed preflight");
+        return repairedDiff;
+      } catch (secondError) {
+        const secondMessage = String(secondError instanceof Error ? secondError.message : secondError);
+        this.output.appendLine(`[safegraph-ai] repaired diff failed preflight, retrying with current files: ${secondMessage}`);
+        const secondRepair = await this.repairDiffWithBedrock(
+          repairedDiff,
+          `${firstMessage}\nSecond repair failed: ${secondMessage}`,
+          `${reason}; repair retry against current file contents`
+        );
+        await preflightUnifiedDiffAgainstWorkspace(secondRepair);
+        this.output.appendLine("[safegraph-ai] second repaired diff passed preflight");
+        return secondRepair;
+      }
+    }
+  }
+
+  private async applyDiffWithRepair(diff: string, reason: string) {
+    const prepared = await this.prepareDiffForApply(diff, reason);
+    try {
+      await applyUnifiedDiffToWorkspaceSmart(prepared, this.output);
+      return;
+    } catch (firstApplyError) {
+      const firstApplyMessage = String(firstApplyError instanceof Error ? firstApplyError.message : firstApplyError);
+      if (!/Hunk out of range|Context mismatch|Delete line mismatch|patch does not apply|git apply/i.test(firstApplyMessage)) {
+        throw firstApplyError;
+      }
+      this.output.appendLine(`[safegraph-ai] apply failed after preflight, repairing against current files: ${firstApplyMessage}`);
+      const repaired = await this.repairDiffWithBedrock(
+        prepared,
+        firstApplyMessage,
+        `${reason}; apply failed after preflight`
+      );
+      await preflightUnifiedDiffAgainstWorkspace(repaired);
+      try {
+        await applyUnifiedDiffToWorkspaceSmart(repaired, this.output);
+        return;
+      } catch (secondApplyError) {
+        const secondApplyMessage = String(secondApplyError instanceof Error ? secondApplyError.message : secondApplyError);
+        this.output.appendLine(`[safegraph-ai] repaired apply failed, retrying once: ${secondApplyMessage}`);
+        const secondRepair = await this.repairDiffWithBedrock(
+          repaired,
+          `${firstApplyMessage}\nRepaired apply failed: ${secondApplyMessage}`,
+          `${reason}; second apply repair against current files`
+        );
+        await preflightUnifiedDiffAgainstWorkspace(secondRepair);
+        await applyUnifiedDiffToWorkspaceSmart(secondRepair, this.output);
+      }
+    }
   }
 }
