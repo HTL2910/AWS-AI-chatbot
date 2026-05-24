@@ -8,6 +8,7 @@ export type BedrockConverseOptions = {
   temperature?: number;
   signal?: AbortSignal;
   retries?: number;
+  toolConfig?: any;
 };
 
 export type BedrockConverseResult = {
@@ -26,7 +27,7 @@ async function sleep(ms: number) {
 }
 
 export async function bedrockConverse(
-  userText: string,
+  input: string | { role: "user" | "assistant"; text?: string; content?: any[] }[],
   options: BedrockConverseOptions
 ): Promise<BedrockConverseResult> {
   const region = options.region;
@@ -36,10 +37,21 @@ export async function bedrockConverse(
   const temperature = options.temperature ?? 0.3;
   const maxRetries = options.retries ?? 2;
 
-  const payload = JSON.stringify({
-    messages: [{ role: "user", content: [{ text: userText }] }],
+  const messages = typeof input === "string" 
+    ? [{ role: "user", content: [{ text: input }] }]
+    : input.map(m => ({ 
+        role: m.role, 
+        content: m.content ? m.content : [{ text: m.text || "" }] 
+      }));
+
+  const payloadObj: any = {
+    messages,
     inferenceConfig: { maxTokens, temperature }
-  });
+  };
+  if (options.toolConfig) {
+    payloadObj.toolConfig = options.toolConfig;
+  }
+  const payload = JSON.stringify(payloadObj);
 
   let lastError: Error | null = null;
 
@@ -95,8 +107,9 @@ export async function bedrockConverse(
       const content = parsed?.output?.message?.content;
       const stopReason = String(parsed?.stopReason || parsed?.stop_reason || "").toLowerCase();
       if (Array.isArray(content)) {
-        const text = content.map((c: any) => c?.text).filter(Boolean).join("\n");
-        if (text) return { text, stopReason, raw: parsed };
+        const textParts = content.map((c: any) => c?.text).filter(Boolean);
+        const text = textParts.join("\n");
+        return { text, stopReason, raw: parsed };
       }
       return { text: raw, stopReason, raw: parsed };
     } catch (e) {

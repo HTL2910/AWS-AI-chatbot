@@ -71,7 +71,7 @@
 
   function resetCurrentRequest() {
     currentMessageId = null;
-    sendEl.textContent = "Send";
+    sendEl.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
     sendEl.disabled = false;
     setStatus("Ready", "idle");
     updateComposerMeta();
@@ -438,6 +438,64 @@
     return m[1].replace(/^[ab]\//, "");
   }
 
+  function stripDiffBlocks(text) {
+    return String(text || "").replace(/```diff\s*[\s\S]*?```/gi, "").trim();
+  }
+
+  function summarizeUnifiedDiff(fullDiffBody) {
+    const files = splitUnifiedDiffByFile(fullDiffBody);
+    const summaries = files.map((fileDiff) => {
+      const label = extractFileLabel(fileDiff);
+      const isNew = /^---\s+\/dev\/null/m.test(fileDiff);
+      const isDeleted = /^\+\+\+\s+\/dev\/null/m.test(fileDiff);
+      let added = 0;
+      let removed = 0;
+      for (const line of String(fileDiff || "").split(/\r?\n/)) {
+        if (line.startsWith("+++") || line.startsWith("---")) continue;
+        if (line.startsWith("+")) added += 1;
+        if (line.startsWith("-")) removed += 1;
+      }
+      return { label, added, removed, isNew, isDeleted };
+    });
+    return summaries;
+  }
+
+  function renderChangeSummary(container, fullDiffBody, hasModelSummary) {
+    const summaries = summarizeUnifiedDiff(fullDiffBody);
+    if (!summaries.length) return;
+
+    const box = document.createElement("div");
+    box.className = "changeSummary";
+
+    const title = document.createElement("div");
+    title.className = "changeSummaryTitle";
+    title.textContent = hasModelSummary ? "Tổng kết thay đổi được phát hiện" : "Tổng kết thay đổi";
+    box.appendChild(title);
+
+    const list = document.createElement("ul");
+    for (const item of summaries.slice(0, 12)) {
+      const li = document.createElement("li");
+      const action = item.isNew ? "Tạo mới" : item.isDeleted ? "Xoá" : "Cập nhật";
+      li.textContent = `${action} ${item.label} (${item.added} dòng thêm, ${item.removed} dòng xoá)`;
+      list.appendChild(li);
+    }
+    if (summaries.length > 12) {
+      const li = document.createElement("li");
+      li.textContent = `Và ${summaries.length - 12} file khác.`;
+      list.appendChild(li);
+    }
+    box.appendChild(list);
+
+    const hint = document.createElement("div");
+    hint.className = "changeSummaryHint";
+    hint.textContent = hasModelSummary
+      ? "Phần dưới là patch chi tiết để kiểm tra hoặc apply."
+      : "AI chưa ghi giải thích riêng, nên Safegraph tự tóm tắt từ patch. Phần dưới là patch chi tiết để kiểm tra hoặc apply.";
+    box.appendChild(hint);
+
+    container.appendChild(box);
+  }
+
   function renderDiffPreview(container, fullDiffBody) {
     const files = splitUnifiedDiffByFile(fullDiffBody);
     const header = document.createElement("div");
@@ -536,7 +594,7 @@
       el = appendMessage("assistant", "");
       assistantById.set(id, el);
       currentMessageId = id;
-      sendEl.textContent = "Stop";
+      sendEl.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>`;
       setStatus("Thinking", "busy");
       updateComposerMeta();
     }
@@ -591,10 +649,28 @@
     el.removeAttribute("data-started-at");
     stopLoadingTickerIfIdle();
     el.innerHTML = "";
+    const rawText = String(text || "");
+    const hasDiff = rawText.includes("```diff");
+    const diffBodies = [];
+    if (hasDiff) {
+      const re = /```diff\s*([\s\S]*?)```/gi;
+      for (const m of rawText.matchAll(re)) {
+        const diffBody = String(m[1] || "").trim();
+        if (diffBody) diffBodies.push(diffBody);
+      }
+    }
+
+    const proseText = hasDiff ? stripDiffBlocks(rawText) : rawText;
     const tmp = document.createElement("div");
     tmp.className = "markdown";
-    renderMarkdown(tmp, String(text || ""));
-    el.appendChild(tmp);
+    if (proseText.trim()) {
+      renderMarkdown(tmp, proseText);
+      el.appendChild(tmp);
+    }
+
+    if (diffBodies.length > 0) {
+      renderChangeSummary(el, diffBodies.join("\n\n"), proseText.trim().length > 0);
+    }
 
     const actionBar = document.createElement("div");
     actionBar.className = "messageActions";
@@ -639,13 +715,7 @@
     }
 
     // Diff previews (per-file) only on done=true.
-    if (typeof text === "string" && text.includes("```diff")) {
-      const re = /```diff\s*([\s\S]*?)```/gi;
-      const diffBodies = [];
-      for (const m of text.matchAll(re)) {
-        const diffBody = String(m[1] || "").trim();
-        if (diffBody) diffBodies.push(diffBody);
-      }
+    if (diffBodies.length > 0) {
       if (diffBodies.length > 0) {
         const container = document.createElement("div");
         container.className = "diffBlock";
@@ -805,10 +875,14 @@
     });
   }
 
-  const MAX_FILE_BYTES = 200 * 1024; // 200KB per file
-  const MAX_TOTAL_BYTES = 800 * 1024; // 800KB total
+  const MAX_TEXT_FILE_BYTES = 800 * 1024; // 800KB per text file
+  const MAX_IMAGE_FILE_BYTES = 5 * 1024 * 1024; // 5MB per image
+  const MAX_OTHER_FILE_BYTES = 2 * 1024 * 1024; // 2MB per non-text file
+  const MAX_TOTAL_BYTES = 20 * 1024 * 1024; // 20MB total
+  const MAX_IMAGE_DATA_URL_CHARS = 650_000;
   const MAX_DROPPED_FOLDER_FILES = 80;
   const acceptedTextPattern = /\.(txt|md|json|js|ts|tsx|jsx|css|html|yaml|yml|py|java|c|cpp|h|hpp|cs|rs|go|sh|ps1|cmd|toml|xml|sql)$/i;
+  const acceptedImagePattern = /\.(png|jpe?g|gif|webp|bmp)$/i;
 
   function currentAttachmentBytes() {
     let sum = 0;
@@ -894,6 +968,21 @@
     });
   }
 
+  async function readFileAsDataUrl(file) {
+    return await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onerror = () => reject(new Error("read failed"));
+      r.onload = () => resolve(String(r.result || ""));
+      r.readAsDataURL(file);
+    });
+  }
+
+  function attachmentLimitFor(file, name, mime) {
+    if (mime.startsWith("text/") || acceptedTextPattern.test(name)) return MAX_TEXT_FILE_BYTES;
+    if (mime.startsWith("image/") || acceptedImagePattern.test(name)) return MAX_IMAGE_FILE_BYTES;
+    return MAX_OTHER_FILE_BYTES;
+  }
+
   async function attachFilesFromList(fileList) {
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
@@ -902,16 +991,17 @@
       const file = item && item.file ? item.file : item;
       if (!file) continue;
       const displayName = String((item && item.name) || file.webkitRelativePath || file.name || "file");
-      if ((file.size || 0) > MAX_FILE_BYTES) {
-        appendMessage("error", `Attachment too large: ${displayName} (max ${Math.round(MAX_FILE_BYTES / 1024)}KB)`);
+      const mime = String(file.type || "");
+      const limit = attachmentLimitFor(file, displayName, mime);
+      if ((file.size || 0) > limit) {
+        appendMessage("error", `Attachment too large: ${displayName} (max ${Math.round(limit / 1024 / 1024 * 10) / 10}MB)`);
         continue;
       }
       if (currentAttachmentBytes() + (file.size || 0) > MAX_TOTAL_BYTES) {
-        appendMessage("error", `Attachments total too large (max ${Math.round(MAX_TOTAL_BYTES / 1024)}KB)`);
+        appendMessage("error", `Attachments total too large (max ${Math.round(MAX_TOTAL_BYTES / 1024 / 1024)}MB)`);
         break;
       }
 
-      const mime = String(file.type || "");
       const name = displayName;
       let text = `[binary file: ${name}, ${Math.round((file.size || 0) / 1024)}KB]`;
       if (mime.startsWith("text/") || acceptedTextPattern.test(name)) {
@@ -919,6 +1009,21 @@
           text = await readFileAsText(file);
         } catch {
           text = `[file could not be read as text: ${name}]`;
+        }
+      } else if (mime.startsWith("image/") || acceptedImagePattern.test(name)) {
+        try {
+          const dataUrl = await readFileAsDataUrl(file);
+          const clipped = dataUrl.length > MAX_IMAGE_DATA_URL_CHARS
+            ? `${dataUrl.slice(0, MAX_IMAGE_DATA_URL_CHARS)}...[image data truncated]`
+            : dataUrl;
+          text = [
+            `[image attachment: ${name}]`,
+            `mime: ${mime || "image/unknown"}`,
+            `size: ${Math.round((file.size || 0) / 1024)}KB`,
+            `data_url_preview: ${clipped}`
+          ].join("\n");
+        } catch {
+          text = `[image attachment could not be read: ${name}, ${Math.round((file.size || 0) / 1024)}KB]`;
         }
       }
 
@@ -994,6 +1099,24 @@
 
   function parseDroppedUris(dataTransfer) {
     if (!dataTransfer || typeof dataTransfer.getData !== "function") return [];
+    
+    try {
+      const explorerData = dataTransfer.getData("application/vnd.code.tree.workspaceExplorer");
+      if (explorerData) {
+        const parsed = JSON.parse(explorerData);
+        if (Array.isArray(parsed)) {
+          return parsed.map(item => {
+            if (typeof item === "string") return item;
+            if (item && item.scheme && item.path) return `${item.scheme}://${item.authority || ''}${item.path}`;
+            if (item && item.path) return `file://${item.path}`;
+            return "";
+          }).filter(Boolean);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to parse workspaceExplorer data", e);
+    }
+
     const raw =
       dataTransfer.getData("text/uri-list") ||
       dataTransfer.getData("text/plain") ||
@@ -1046,6 +1169,7 @@
         }
         mentionEl.hidden = true;
         mentionEl.innerHTML = "";
+        renderTaggedFiles();
         inputEl.focus();
       });
       mentionEl.appendChild(row);
@@ -1264,7 +1388,14 @@
     }
 
     // Debug signal in UI (better than silent no-op)
-    appendMessage("error", "Drop received but no files or folders were attached (blocked by host or non-file drag).");
+    const types = Array.from(e.dataTransfer.types || []).join(", ");
+    let debugText = "";
+    try { debugText = e.dataTransfer.getData("text/plain") || ""; } catch (e) {}
+    let uriList = "";
+    try { uriList = e.dataTransfer.getData("text/uri-list") || ""; } catch (e) {}
+    let treeData = "";
+    try { treeData = e.dataTransfer.getData("application/vnd.code.tree.workspaceExplorer") || ""; } catch (e) {}
+    appendMessage("error", `Drop empty. Types: ${types}. Plain: ${debugText}. URI: ${uriList}. Tree: ${treeData}`);
   }
 
   // Keep local listeners (they help with consistent leave depth), but global listeners below

@@ -424,6 +424,40 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
     }
   }
 
+  function applyOneHunkByDeletions(h: Hunk) {
+    const deleted = h.lines.filter((l) => l.kind === "del").map((l) => l.text);
+    const added = h.lines.filter((l) => l.kind === "add").map((l) => l.text);
+    
+    if (deleted.length === 0) {
+      // Cannot do pure deletion replace if nothing is deleted (i.e. pure insertion)
+      // For pure insertion, we'd need context, which has already failed.
+      return false;
+    }
+
+    // Find where the deleted lines appear sequentially in `out`
+    let matchStarts: number[] = [];
+    for (let i = 0; i <= out.length - deleted.length; i++) {
+      let matches = true;
+      for (let j = 0; j < deleted.length; j++) {
+        if (!sameLine(out[i + j], deleted[j], true)) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) matchStarts.push(i);
+    }
+
+    // Only apply if it uniquely matches to avoid patching the wrong block
+    if (matchStarts.length === 1) {
+      const idx = matchStarts[0];
+      out.splice(idx, deleted.length, ...added);
+      lineOffset += added.length - deleted.length;
+      return true;
+    }
+
+    return false;
+  }
+
   for (const h of hunks) {
     // oldStart is 1-based
     let idx = (h.oldStart - 1) + lineOffset;
@@ -431,6 +465,7 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
       const fuzzy = findHunkStartIndex(h) ?? findHunkStartIndex(h, true) ?? findApproxHunkStartIndex(h);
       if (fuzzy == null) {
         if (hunkAlreadyApplied(h)) continue;
+        if (applyOneHunkByDeletions(h)) continue;
         throw new Error("Hunk out of range.");
       }
       idx = fuzzy;
@@ -462,9 +497,16 @@ function applyHunksToLines(original: string[], hunks: Hunk[]): string[] {
       const approx = findApproxHunkStartIndex(h);
       if (approx == null) {
         if (hunkAlreadyApplied(h)) continue;
+        if (applyOneHunkByDeletions(h)) continue;
         throw new Error("Context mismatch while applying diff.");
       }
-      applyOneHunkApprox(h, approx);
+      
+      try {
+        applyOneHunkApprox(h, approx);
+      } catch (e) {
+        if (applyOneHunkByDeletions(h)) continue;
+        throw e;
+      }
     }
   }
   return out;
@@ -591,15 +633,44 @@ function applySinglePatchToText(originalText: string, diffText: string, targetPa
     return created.join("\n").replace(/\n/g, eol);
   }
 
-  return applyHunksToLines(lines, patch.hunks).join("\n").replace(/\n/g, eol);
+  try {
+    return applyHunksToLines(lines, patch.hunks).join("\n").replace(/\n/g, eol);
+  } catch (error) {
+    if (originalText.trim().length === 0 && /Hunk out of range|Context mismatch|Delete line mismatch/i.test(String(error))) {
+      return synthesizeTextForEmptyTarget(patch, eol);
+    }
+    throw error;
+  }
 }
 
-export async function preflightUnifiedDiffAgainstWorkspace(diffText: string) {
-  const patches = parseUnifiedDiff(diffText);
+function synthesizeTextForEmptyTarget(patch: FilePatch, eol: string) {
+  const created: string[] = [];
+  for (const h of patch.hunks) {
+    for (const l of h.lines) {
+      if (l.kind === "add" || l.kind === "context") created.push(l.text);
+    }
+  }
+  const text = created.join("\n").replace(/\n/g, eol);
+  if (!text.trim()) {
+    throw new Error(`Cannot reconstruct ${patch.filePath}: patch does not contain new file content.`);
+  }
+  return text;
+}
+
+export type WorkspaceApplyOptions = {
+  rootUri?: vscode.Uri;
+};
+
+function workspaceRootOrDefault(options: WorkspaceApplyOptions = {}) {
+  if (options.rootUri) return options.rootUri;
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) throw new Error("No workspace folder open.");
+  return folders[0].uri;
+}
 
-  const root = folders[0].uri;
+export async function preflightUnifiedDiffAgainstWorkspace(diffText: string, options: WorkspaceApplyOptions = {}) {
+  const patches = parseUnifiedDiff(diffText);
+  const root = workspaceRootOrDefault(options);
   const checked: string[] = [];
   for (const patch of patches) {
     if (patch.kind === "delete") {
@@ -624,72 +695,99 @@ export async function preflightUnifiedDiffAgainstWorkspace(diffText: string) {
   return checked;
 }
 
-export async function applyUnifiedDiffToWorkspace(diffText: string) {
+export async function applyUnifiedDiffToWorkspace(diffText: string, options: WorkspaceApplyOptions = {}) {
   const patches = parseUnifiedDiff(diffText);
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders || folders.length === 0) throw new Error("No workspace folder open.");
-
-  const root = folders[0].uri;
-  const edit = new vscode.WorkspaceEdit();
+  const root = workspaceRootOrDefault(options);
 
   for (const fp of patches) {
     const uri = vscode.Uri.joinPath(root, fp.filePath);
     if (fp.kind === "delete") {
       // Unified diff delete: --- a/path, +++ /dev/null
-      edit.deleteFile(uri, { ignoreIfNotExists: false, recursive: false });
+      await vscode.workspace.fs.delete(uri, { useTrash: false, recursive: false });
       continue;
     }
 
-    let existed = true;
     let text = "";
     try {
       const bytes = await vscode.workspace.fs.readFile(uri);
       text = Buffer.from(bytes).toString("utf8");
     } catch {
-      existed = false;
       text = "";
     }
 
     const eol = text.includes("\r\n") ? "\r\n" : "\n";
     const lines = text ? text.replace(/\r\n/g, "\n").split("\n") : [];
+    let newText: string;
 
     if (fp.kind === "create") {
       // Unified diff create: --- /dev/null, +++ b/path
-      // We treat the original file as empty; only additions should exist.
-      const hasBad = fp.hunks.some((h) => h.lines.some((l) => l.kind !== "add"));
-      if (hasBad) {
-        throw new Error(`Create diff for ${fp.filePath} must contain add-only lines.`);
-      }
+      // LLMs sometimes emit context lines (" ") or even del lines ("-") in create hunks.
+      // Tolerate this: treat context lines as additions, skip del lines entirely.
+      // This is safe because the target file is empty (or being created fresh).
       const created: string[] = [];
-      for (const h of fp.hunks) for (const l of h.lines) created.push(l.text);
-      const newText = created.join("\n").replace(/\n/g, eol);
-      validateAppliedText(fp.filePath, newText);
-      await validatePythonSyntax(fp.filePath, newText);
-      if (!existed) {
-        edit.createFile(uri, { overwrite: false, ignoreIfExists: false });
-        edit.insert(uri, new vscode.Position(0, 0), newText);
-      } else {
-        // If file exists, fall back to replace whole file.
-        const fullRange = new vscode.Range(
-          new vscode.Position(0, 0),
-          new vscode.Position(lines.length, 0)
-        );
-        edit.replace(uri, fullRange, newText);
+      for (const h of fp.hunks) {
+        for (const l of h.lines) {
+          if (l.kind === "add" || l.kind === "context") {
+            created.push(l.text);
+          }
+          // l.kind === "del" is silently skipped — no content to delete in a new file.
+        }
       }
-      continue;
+      newText = created.join("\n").replace(/\n/g, eol);
+    } else {
+      // update
+      try {
+        const newLines = applyHunksToLines(lines, fp.hunks);
+        newText = newLines.join("\n").replace(/\n/g, eol);
+      } catch (error) {
+        if (text.trim().length === 0 && /Hunk out of range|Context mismatch|Delete line mismatch/i.test(String(error))) {
+          newText = synthesizeTextForEmptyTarget(fp, eol);
+        } else {
+          throw error;
+        }
+      }
     }
 
-    // update
-    const newLines = applyHunksToLines(lines, fp.hunks);
-    const newText = newLines.join("\n").replace(/\n/g, eol);
     validateAppliedText(fp.filePath, newText);
     await validatePythonSyntax(fp.filePath, newText);
-    const fullRange = new vscode.Range(new vscode.Position(0, 0), new vscode.Position(lines.length, 0));
-    edit.replace(uri, fullRange, newText);
+    await writeTextFile(uri, newText);
+  }
+}
+
+async function writeTextFile(uri: vscode.Uri, text: string) {
+  const parentDir = vscode.Uri.joinPath(uri, "..");
+  try {
+    await vscode.workspace.fs.createDirectory(parentDir);
+  } catch {
+    // Directory may already exist; ignore.
   }
 
-  const ok = await vscode.workspace.applyEdit(edit);
-  if (!ok) throw new Error("VS Code rejected the workspace edit.");
+  const openDoc = vscode.workspace.textDocuments.find((doc) => doc.uri.toString() === uri.toString());
+  if (openDoc && openDoc.isDirty) {
+    const edit = new vscode.WorkspaceEdit();
+    const fullRange = new vscode.Range(
+      new vscode.Position(0, 0),
+      new vscode.Position(openDoc.lineCount, 0)
+    );
+    edit.replace(uri, fullRange, text);
+    const ok = await vscode.workspace.applyEdit(edit);
+    if (ok) {
+      const saved = await openDoc.save();
+      if (!saved) throw new Error(`VS Code could not save ${uri.fsPath} after applying changes.`);
+      return;
+    }
+    // Fall back to disk write when the editor refuses the edit.
+  }
+
+  await vscode.workspace.fs.writeFile(uri, Buffer.from(text, "utf8"));
+
+  if (openDoc && !openDoc.isDirty) {
+    try {
+      await vscode.commands.executeCommand("workbench.action.files.revert");
+    } catch {
+      // Best effort only; disk has already been written.
+    }
+  }
 }
 
 async function runGitApply3Way(rootFsPath: string, diffText: string, output?: vscode.OutputChannel) {
@@ -753,20 +851,28 @@ async function runGitApply3Way(rootFsPath: string, diffText: string, output?: vs
   }
 }
 
-export async function applyUnifiedDiffToWorkspaceSmart(diffText: string, output?: vscode.OutputChannel) {
+export async function applyUnifiedDiffToWorkspaceSmart(diffText: string, output?: vscode.OutputChannel, options: WorkspaceApplyOptions = {}) {
   try {
-    await applyUnifiedDiffToWorkspace(diffText);
+    await applyUnifiedDiffToWorkspace(diffText, options);
   } catch (e: any) {
     const msg = String(e?.message || e);
     // Only fallback for common patch drift issues.
     if (!/Hunk out of range|Context mismatch|Delete line mismatch/i.test(msg)) {
       throw e;
     }
-    const folders = vscode.workspace.workspaceFolders;
-    const rootFsPath = folders?.[0]?.uri.fsPath;
+    const rootFsPath = workspaceRootOrDefault(options).fsPath;
     if (!rootFsPath) throw e;
     output?.appendLine(`[safegraph-ai] apply fuzzy failed (${msg}); trying git apply --3way fallback`);
-    await runGitApply3Way(rootFsPath, diffText, output);
-    output?.appendLine("[safegraph-ai] git apply --3way succeeded");
+    try {
+      await runGitApply3Way(rootFsPath, diffText, output);
+      output?.appendLine("[safegraph-ai] git apply --3way succeeded");
+    } catch (gitError) {
+      const gitMessage = String(gitError instanceof Error ? gitError.message : gitError);
+      if (/not a git repo|git fallback unavailable/i.test(gitMessage)) {
+        output?.appendLine(`[safegraph-ai] git fallback skipped: ${gitMessage}`);
+        throw e;
+      }
+      throw gitError;
+    }
   }
 }

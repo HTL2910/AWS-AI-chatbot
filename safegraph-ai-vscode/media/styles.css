@@ -1,15 +1,16 @@
 :root {
-  --bg: #101318;
-  --panel: #171b22;
-  --muted: #9aa4b2;
-  --user: #255f85;
-  --assistant: #1b222b;
-  --border: rgba(148, 163, 184, 0.25);
-  --text: #e7edf5;
-  --accent: #3b82f6;
-  --ok: #22c55e;
-  --warn: #f59e0b;
-  --danger: #ef4444;
+  --bg: #0d1117;
+  --panel: #161b22;
+  --muted: #8b949e;
+  --user: rgba(56, 139, 253, 0.15);
+  --assistant: transparent;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --accent: #58a6ff;
+  --ok: #238636;
+  --warn: #d29922;
+  --danger: #f85149;
+  --ring: rgba(88, 166, 255, 0.3);
 }
 
 html,
@@ -44,9 +45,13 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
-  background: rgba(23, 27, 34, 0.95);
+  background: var(--bg);
+  backdrop-filter: blur(10px);
+  position: sticky;
+  top: 0;
+  z-index: 50;
 }
 
 .title {
@@ -54,81 +59,101 @@ body {
   align-items: center;
   gap: 8px;
   font-weight: 600;
+  font-size: 14px;
   color: var(--text);
   min-width: 0;
-  flex-wrap: wrap;
 }
 
 .versionBadge {
-  border: 1px solid rgba(56, 189, 248, 0.35);
-  background: rgba(56, 189, 248, 0.12);
-  color: #bae6fd;
-  border-radius: 999px;
-  padding: 2px 7px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.4;
-  white-space: nowrap;
+  border: 1px solid rgba(88, 166, 255, 0.4);
+  background: rgba(88, 166, 255, 0.1);
+  color: var(--accent);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
 }
 
 .statusBadge {
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: rgba(148, 163, 184, 0.1);
+  border: 1px solid var(--border);
+  background: var(--panel);
   color: var(--muted);
-  border-radius: 999px;
-  padding: 2px 7px;
-  font-size: 11px;
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 10px;
   font-weight: 600;
-  line-height: 1.4;
-  white-space: nowrap;
+  text-transform: uppercase;
+  transition: all 0.2s ease;
 }
 
 .statusBadge[data-tone="busy"] {
-  border-color: rgba(245, 158, 11, 0.42);
-  background: rgba(245, 158, 11, 0.14);
-  color: #fde68a;
+  border-color: rgba(210, 153, 34, 0.4);
+  background: rgba(210, 153, 34, 0.1);
+  color: var(--warn);
 }
 
 .statusBadge[data-tone="ok"] {
-  border-color: rgba(34, 197, 94, 0.42);
-  background: rgba(34, 197, 94, 0.14);
-  color: #bbf7d0;
+  border-color: rgba(35, 134, 54, 0.4);
+  background: rgba(35, 134, 54, 0.1);
+  color: var(--ok);
 }
 
 .statusBadge[data-tone="error"] {
-  border-color: rgba(239, 68, 68, 0.45);
-  background: rgba(239, 68, 68, 0.14);
-  color: #fecaca;
+  border-color: rgba(248, 81, 73, 0.4);
+  background: rgba(248, 81, 73, 0.1);
+  color: var(--danger);
 }
 
 .topbarActions {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.topbarBtn.active {
-  border-color: rgba(34, 197, 94, 0.45);
-  background: rgba(34, 197, 94, 0.16);
-  color: #bbf7d0;
 }
 
 .topbarBtn {
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  background: rgba(148, 163, 184, 0.1);
-  color: var(--text);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
   border-radius: 6px;
-  padding: 5px 8px;
+  padding: 6px;
   cursor: pointer;
-  font-size: 12px;
-  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
 }
 
 .topbarBtn:hover {
-  background: rgba(148, 163, 184, 0.16);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.topbarBtn.active {
+  color: var(--ok);
+  background: rgba(35, 134, 54, 0.1);
+}
+
+.topbarBtn.agentToggle {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  gap: 6px;
+  color: var(--text);
+}
+.topbarBtn.agentToggle .statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: all 0.2s ease;
+}
+.topbarBtn.agentToggle.active .statusDot {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
 }
 
 .messages {
@@ -237,28 +262,32 @@ body {
 }
 
 .msg {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 10px;
+  padding: 16px;
   white-space: pre-wrap;
   word-break: break-word;
-  max-width: min(880px, 94%);
+  max-width: 100%;
+  border-radius: 8px;
+  line-height: 1.5;
+  font-size: 13px;
 }
 
 .msg.user {
-  background: rgba(37, 95, 133, 0.22);
-  border-color: rgba(56, 189, 248, 0.28);
+  background: var(--user);
   align-self: flex-end;
+  max-width: 85%;
+  border: 1px solid rgba(88, 166, 255, 0.2);
 }
 
 .msg.assistant {
-  background: rgba(27, 34, 43, 0.82);
+  background: transparent;
   align-self: flex-start;
+  width: 100%;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .msg.assistant.loading {
-  border-color: rgba(56, 189, 248, 0.6);
-  background: rgba(15, 23, 42, 0.75);
+  opacity: 0.8;
 }
 
 .assistantContent {
@@ -385,6 +414,35 @@ body {
   background: rgba(15, 23, 42, 0.6);
 }
 
+.changeSummary {
+  margin: 8px 0 10px;
+  border: 1px solid rgba(88, 166, 255, 0.28);
+  background: rgba(88, 166, 255, 0.08);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.changeSummaryTitle {
+  font-weight: 700;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.changeSummary ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.changeSummary li {
+  margin: 3px 0;
+}
+
+.changeSummaryHint {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .diffHeader {
   display: flex;
   align-items: center;
@@ -486,29 +544,27 @@ body {
 }
 
 .composer {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
-  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
   border-top: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--bg);
   position: relative;
   z-index: 20;
-  box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.18);
 }
 
 .composerMeta {
-  grid-column: 1 / -1;
   color: var(--muted);
   font-size: 11px;
-  min-height: 16px;
+  margin-top: 8px;
+  text-align: center;
 }
 
 .contextTools {
-  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .mention {
@@ -544,55 +600,88 @@ body {
   font-size: 12px;
 }
 
+.inputWrapper {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.inputWrapper:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--ring);
+}
+
 .input {
   display: block;
   width: 100%;
-  min-width: 0;
   box-sizing: border-box;
-  min-height: 36px;
-  max-height: 160px;
-  background: rgba(148, 163, 184, 0.08);
-  border: 1px solid var(--border);
+  min-height: 44px;
+  max-height: 200px;
+  background: transparent;
+  border: none;
   color: var(--text);
-  border-radius: 6px;
-  padding: 8px 10px;
+  padding: 12px 48px 12px 12px;
   outline: none;
   resize: none;
   font: inherit;
-  line-height: 1.4;
-}
-
-.input:focus {
-  border-color: rgba(37, 99, 235, 0.55);
+  line-height: 1.5;
 }
 
 .send {
-  min-width: 74px;
-  align-self: stretch;
-  border: 1px solid rgba(236, 72, 153, 0.55);
-  background: rgba(236, 72, 153, 0.18);
-  color: var(--text);
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
   border-radius: 6px;
-  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
+  transition: all 0.2s ease;
 }
 
 .send:hover {
-  background: rgba(236, 72, 153, 0.26);
+  background: #79c0ff;
+  transform: translateY(-1px);
+}
+
+.send.stopBtn {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+.send.stopBtn:hover {
+  background: rgba(248, 81, 73, 0.1);
+  transform: none;
 }
 
 .toolBtn {
-  border: 1px solid rgba(59, 130, 246, 0.48);
-  background: rgba(59, 130, 246, 0.16);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 5px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  border-radius: 16px;
+  padding: 4px 10px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.2s ease;
 }
 
 .toolBtn:hover {
-  background: rgba(59, 130, 246, 0.24);
+  background: var(--panel);
+  color: var(--text);
+  border-color: rgba(139, 148, 158, 0.4);
 }
 
 .taggedFilesList {

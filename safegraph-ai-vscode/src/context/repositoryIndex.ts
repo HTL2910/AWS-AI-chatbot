@@ -40,6 +40,7 @@ type RepositoryIndex = {
 export type RepositoryContextOptions = {
   query: string;
   storageUri?: vscode.Uri;
+  rootUri?: vscode.Uri;
   maxFiles?: number;
   maxChunks?: number;
   maxChars?: number;
@@ -54,8 +55,8 @@ const MAX_FILE_BYTES = 220_000;
 const SYMBOL_PROVIDER_TIMEOUT_MS = 900;
 const INDEX_BATCH_SIZE = 8;
 
-function workspaceRoot() {
-  return vscode.workspace.workspaceFolders?.[0]?.uri;
+function workspaceRoot(rootUri?: vscode.Uri) {
+  return rootUri ?? vscode.workspace.workspaceFolders?.[0]?.uri;
 }
 
 function relativePath(root: vscode.Uri, uri: vscode.Uri) {
@@ -543,7 +544,7 @@ async function writeCachedIndex(storageUri: vscode.Uri | undefined, root: vscode
 
 async function buildIndex(root: vscode.Uri, maxFiles: number, storageUri?: vscode.Uri) {
   const startedAt = Date.now();
-  const files = await vscode.workspace.findFiles(SOURCE_GLOB, EXCLUDE_GLOB, maxFiles);
+  const files = await vscode.workspace.findFiles(new vscode.RelativePattern(root, SOURCE_GLOB), EXCLUDE_GLOB, maxFiles);
   const cached = await readCachedIndex(storageUri, root);
   const stats: Record<string, { mtime: number; size: number }> = {};
   const cachedChunksByPath = new Map<string, RepositoryChunk[]>();
@@ -733,7 +734,7 @@ function expandWithSymbolGraph(
 }
 
 export async function buildRepositoryContext(options: RepositoryContextOptions) {
-  const root = workspaceRoot();
+  const root = workspaceRoot(options.rootUri);
   if (!root) return "";
 
   const maxFiles = options.maxFiles ?? 800;

@@ -3,22 +3,6 @@ import { bedrockConverse } from "../bedrock/bedrockClient";
 import { loadBedrockApiKeyFromDotEnv } from "../config/env";
 import { maskSensitive } from "../security/mask";
 
-const INLINE_PREVIEW_SCHEME = "safegraph-inline-preview";
-const inlinePreviewDocs = new Map<string, string>();
-let inlinePreviewProviderRegistered = false;
-
-function ensureInlinePreviewProvider(context: vscode.ExtensionContext) {
-  if (inlinePreviewProviderRegistered) return;
-  inlinePreviewProviderRegistered = true;
-  context.subscriptions.push(
-    vscode.workspace.registerTextDocumentContentProvider(INLINE_PREVIEW_SCHEME, {
-      provideTextDocumentContent(uri) {
-        return inlinePreviewDocs.get(uri.toString()) || "";
-      }
-    })
-  );
-}
-
 function takeBefore(text: string, offset: number, maxChars: number) {
   return text.slice(Math.max(0, offset - maxChars), offset);
 }
@@ -31,26 +15,6 @@ function stripCodeFence(text: string) {
   const trimmed = text.trim();
   const match = trimmed.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)```$/);
   return (match ? match[1] : trimmed).replace(/\n$/, "");
-}
-
-function uriSafePath(label: string) {
-  return label.replace(/[^a-zA-Z0-9._/-]/g, "_").replace(/^\/+/, "") || "inline-edit";
-}
-
-function makePreviewUri(id: string, side: "original" | "proposed", relativePath: string, language: string, text: string) {
-  const uri = vscode.Uri.from({
-    scheme: INLINE_PREVIEW_SCHEME,
-    path: `/${uriSafePath(relativePath)}.${side}.${language || "txt"}`,
-    query: `${id}:${side}`
-  });
-  inlinePreviewDocs.set(uri.toString(), text);
-  return uri;
-}
-
-function replacementRangeAfterEdit(doc: vscode.TextDocument, startOffset: number, replacement: string) {
-  const start = doc.positionAt(startOffset);
-  const end = doc.positionAt(startOffset + replacement.length);
-  return new vscode.Range(start, end);
 }
 
 async function loadApiKey(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
@@ -66,8 +30,40 @@ async function loadApiKey(context: vscode.ExtensionContext, output: vscode.Outpu
   return apiKey;
 }
 
+const additionDecorationType = vscode.window.createTextEditorDecorationType({
+  backgroundColor: "rgba(46, 160, 67, 0.2)",
+  isWholeLine: true,
+  overviewRulerColor: "rgba(46, 160, 67, 0.8)",
+  overviewRulerLane: vscode.OverviewRulerLane.Right
+});
+
+interface InlineSession {
+  docUri: vscode.Uri;
+  originalText: string;
+  originalRange: vscode.Range;
+  newRange: vscode.Range;
+  resolve: (value: "accept" | "reject") => void;
+}
+
+let currentSession: InlineSession | null = null;
+
+export function acceptInlineEdit() {
+  if (currentSession) {
+    currentSession.resolve("accept");
+  }
+}
+
+export function rejectInlineEdit() {
+  if (currentSession) {
+    currentSession.resolve("reject");
+  }
+}
+
 export async function runInlineEdit(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
-  ensureInlinePreviewProvider(context);
+  if (currentSession) {
+    vscode.window.showWarningMessage("Safegraph AI: Please accept or reject the current inline edit first.");
+    return;
+  }
 
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
@@ -134,7 +130,7 @@ Replacement code only:`;
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: "Safegraph AI Inline Edit",
+      title: "Safegraph AI: Generating edit...",
       cancellable: false
     },
     async () => {
@@ -151,55 +147,46 @@ Replacement code only:`;
         return;
       }
 
-      const proposedText = fullText.slice(0, editStart) + replacement + fullText.slice(editEnd);
-      const previewId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      const originalUri = makePreviewUri(previewId, "original", relativePath, language, fullText);
-      const proposedUri = makePreviewUri(previewId, "proposed", relativePath, language, proposedText);
-      await vscode.commands.executeCommand(
-        "vscode.diff",
-        originalUri,
-        proposedUri,
-        `Safegraph Inline Edit: ${relativePath}`,
-        { preview: true }
-      );
-
-      const choice = await vscode.window.showInformationMessage(
-        "Safegraph AI inline edit preview is open.",
-        "Accept",
-        "Reject"
-      );
-      if (choice !== "Accept") {
-        inlinePreviewDocs.delete(originalUri.toString());
-        inlinePreviewDocs.delete(proposedUri.toString());
-        return;
-      }
-
-      const latestDoc = await vscode.workspace.openTextDocument(doc.uri);
-      if (latestDoc.getText() !== fullText) {
-        vscode.window.showErrorMessage("Safegraph AI: file changed while preview was open. Inline edit was not applied.");
-        inlinePreviewDocs.delete(originalUri.toString());
-        inlinePreviewDocs.delete(proposedUri.toString());
-        return;
-      }
-
       const edit = new vscode.WorkspaceEdit();
       edit.replace(doc.uri, selection, replacement);
-      const ok = await vscode.workspace.applyEdit(edit);
-      if (!ok) {
-        vscode.window.showErrorMessage("Safegraph AI: failed to apply inline edit.");
-        inlinePreviewDocs.delete(originalUri.toString());
-        inlinePreviewDocs.delete(proposedUri.toString());
+      
+      const success = await vscode.workspace.applyEdit(edit);
+      if (!success) {
+        vscode.window.showErrorMessage("Safegraph AI: Failed to apply inline edit.");
         return;
       }
 
-      const updatedEditor = await vscode.window.showTextDocument(doc.uri, { preview: false });
-      const changedRange = replacementRangeAfterEdit(updatedEditor.document, editStart, replacement);
-      updatedEditor.selection = new vscode.Selection(changedRange.start, changedRange.end);
-      updatedEditor.revealRange(changedRange, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+      // Calculate new range
+      const newEndOffset = editStart + replacement.length;
+      const newRange = new vscode.Range(doc.positionAt(editStart), doc.positionAt(newEndOffset));
+      
+      editor.setDecorations(additionDecorationType, [newRange]);
+      await vscode.commands.executeCommand("setContext", "safegraph.inlineActive", true);
 
-      inlinePreviewDocs.delete(originalUri.toString());
-      inlinePreviewDocs.delete(proposedUri.toString());
-      output.appendLine(`[safegraph-ai] inline edit applied to ${relativePath}:${selection.start.line + 1}`);
+      // Wait for Accept/Reject
+      const decision = await new Promise<"accept" | "reject">((resolve) => {
+        currentSession = {
+          docUri: doc.uri,
+          originalText: selectionText,
+          originalRange: selection,
+          newRange,
+          resolve
+        };
+      });
+
+      // Cleanup
+      editor.setDecorations(additionDecorationType, []);
+      await vscode.commands.executeCommand("setContext", "safegraph.inlineActive", false);
+      currentSession = null;
+
+      if (decision === "reject") {
+        const revertEdit = new vscode.WorkspaceEdit();
+        revertEdit.replace(doc.uri, newRange, selectionText);
+        await vscode.workspace.applyEdit(revertEdit);
+        output.appendLine(`[safegraph-ai] inline edit rejected in ${relativePath}`);
+      } else {
+        output.appendLine(`[safegraph-ai] inline edit accepted in ${relativePath}`);
+      }
     }
   );
 }

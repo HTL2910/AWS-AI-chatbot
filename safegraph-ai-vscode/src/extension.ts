@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat/ChatViewProvider";
-import { runInlineEdit } from "./inline/inlineEdit";
+import { runInlineEdit, acceptInlineEdit, rejectInlineEdit } from "./inline/inlineEdit";
 
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel("Safegraph AI");
@@ -14,6 +14,11 @@ export function activate(context: vscode.ExtensionContext) {
   } catch {
     output.appendLine("[safegraph-ai] Version: unknown");
   }
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("safegraph.inlineAccept", () => acceptInlineEdit()),
+    vscode.commands.registerCommand("safegraph.inlineReject", () => rejectInlineEdit())
+  );
   
   output.appendLine("[safegraph-ai] Activate");
   context.subscriptions.push(output);

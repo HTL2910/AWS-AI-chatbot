@@ -1,12 +1,12 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.5.7",
+  "displayName": "Safegraph AI v0.8.0",
   "description": "MVP sidebar AI chat with local code-graph context and Bedrock integration.",
   "repository": {
     "type": "git",
     "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
   },
-  "version": "0.5.7",
+  "version": "0.8.0",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
@@ -50,6 +50,14 @@
       {
         "command": "safegraph.inlineEdit",
         "title": "Safegraph AI: Inline Edit"
+      },
+      {
+        "command": "safegraph.inlineAccept",
+        "title": "Safegraph AI: Accept Inline Edit"
+      },
+      {
+        "command": "safegraph.inlineReject",
+        "title": "Safegraph AI: Reject Inline Edit"
       }
     ],
     "keybindings": [
@@ -58,10 +66,22 @@
         "key": "ctrl+k",
         "mac": "cmd+k",
         "when": "editorTextFocus && !editorReadonly"
+      },
+      {
+        "command": "safegraph.inlineAccept",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "editorTextFocus && safegraph.inlineActive"
+      },
+      {
+        "command": "safegraph.inlineReject",
+        "key": "escape",
+        "mac": "escape",
+        "when": "editorTextFocus && safegraph.inlineActive"
       }
     ],
     "configuration": {
-      "title": "Safegraph AI v0.5.7",
+      "title": "Safegraph AI v0.8.0",
       "properties": {
         "safegraph.autoRun": {
           "type": "string",
@@ -122,7 +142,7 @@
       "activitybar": [
         {
           "id": "safegraph",
-          "title": "Safegraph AI v0.5.7",
+          "title": "Safegraph AI v0.8.0",
           "icon": "media/icon.svg"
         }
       ]
@@ -138,12 +158,15 @@
     }
   },
   "scripts": {
-    "build": "tsc -p .",
+    "build:webview": "cd webview-ui && npm run build",
+    "build:ext": "tsc -p .",
+    "build": "npm run build:webview && npm run build:ext",
     "watch": "tsc -p . -w",
     "bump": "node scripts/bump-version.js",
     "package": "npm run build && node scripts/package-vsix.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "typescript": "^5.5.4"
   },
   "devDependencies": {

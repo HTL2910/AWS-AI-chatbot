@@ -1,11 +1,17 @@
 import * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
+import * as http from "http";
+import * as https from "https";
 import { getChatWebviewHtml } from "./webviewHtml";
 import { bedrockConverse } from "../bedrock/bedrockClient";
 import { buildContext } from "../context/contextBuilder";
 import { maskSensitive } from "../security/mask";
 import { loadBedrockApiKeyFromDotEnv, loadBedrockApiKeyInfos, maskApiKey } from "../config/env";
 import { applyUnifiedDiffToWorkspaceSmart, parseUnifiedDiff, preflightUnifiedDiffAgainstWorkspace } from "../apply/unifiedDiff";
+import { McpClientManager } from "../mcp/McpClient";
 import { CommandRunner, CommandRunResult, CommandUpdateMessage } from "../terminal/commandRunner";
+import { AutoRunMode } from "../terminal/commandPolicy";
 
 type WebviewToExtensionMessage =
   | {
@@ -13,6 +19,7 @@ type WebviewToExtensionMessage =
       id: string;
       text: string;
       ts: number;
+      agentMode?: boolean;
       taggedFiles?: string[];
       attachments?: { name: string; text: string }[];
     }
@@ -73,6 +80,119 @@ function extractDiffBlocks(text: string) {
   return diffs;
 }
 
+function extractUrls(text: string) {
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  const re = /https?:\/\/[^\s<>"'`)\]]+/gi;
+  for (const match of String(text || "").matchAll(re)) {
+    const cleaned = match[0].replace(/[.,;:!?]+$/g, "");
+    if (!seen.has(cleaned)) {
+      seen.add(cleaned);
+      urls.push(cleaned);
+    }
+  }
+  return urls;
+}
+
+function sameDocsSection(seed: URL, candidate: URL) {
+  if (seed.origin !== candidate.origin) return false;
+  const seedParts = seed.pathname.split("/").filter(Boolean);
+  const candidateParts = candidate.pathname.split("/").filter(Boolean);
+  const docsIndex = seedParts.indexOf("docs");
+  if (docsIndex < 0) return candidate.pathname.startsWith(path.posix.dirname(seed.pathname));
+  const prefix = seedParts.slice(0, Math.min(seedParts.length, docsIndex + 3)).join("/");
+  return candidateParts.join("/").startsWith(prefix);
+}
+
+function decodeHtmlEntities(text: string) {
+  return text
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function htmlToReadableText(html: string) {
+  const withoutScripts = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<nav[\s\S]*?<\/nav>/gi, " ");
+  return decodeHtmlEntities(
+    withoutScripts
+      .replace(/<\/(h1|h2|h3|h4|p|li|tr|pre|code|section|article|main)>/gi, "\n")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n\s+/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
+}
+
+function extractPageTitle(html: string) {
+  const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
+  const title = h1 || html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "";
+  return htmlToReadableText(title).replace(/\s+/g, " ").trim();
+}
+
+function extractRelatedLinks(html: string, seedUrl: string) {
+  const seed = new URL(seedUrl);
+  const links: { url: string; label: string }[] = [];
+  const seen = new Set<string>();
+  const re = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  for (const match of html.matchAll(re)) {
+    try {
+      const url = new URL(match[1], seed);
+      url.hash = "";
+      if (!/^https?:$/.test(url.protocol)) continue;
+      if (!sameDocsSection(seed, url)) continue;
+      const normalized = url.toString().replace(/\/$/, "");
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      links.push({ url: normalized, label: htmlToReadableText(match[2]).replace(/\s+/g, " ").slice(0, 120) });
+    } catch {
+      // Ignore malformed anchors.
+    }
+  }
+  return links;
+}
+
+function inferredDocsSiblingLinks(seedUrl: string) {
+  const seed = new URL(seedUrl);
+  const normalizedPath = seed.pathname.replace(/\/$/, "");
+  const parts = normalizedPath.split("/").filter(Boolean);
+  if (parts.length < 2) return [];
+
+  const currentSlug = parts[parts.length - 1];
+  const baseParts = currentSlug === "overview" ? parts.slice(0, -1) : parts;
+  const basePath = "/" + baseParts.join("/");
+  const candidates = [
+    "overview",
+    "navigation",
+    "modes-and-skills",
+    "security-and-governance",
+    "best-practices"
+  ];
+
+  return candidates.map((slug) => ({
+    url: `${seed.origin}${basePath}/${slug}`,
+    label: slug.replace(/-/g, " ")
+  }));
+}
+
+function uniqueLinks(links: { url: string; label: string }[]) {
+  const out: { url: string; label: string }[] = [];
+  const seen = new Set<string>();
+  for (const link of links) {
+    const normalized = link.url.replace(/\/$/, "");
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push({ ...link, url: normalized });
+  }
+  return out;
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = "safegraph.chatView";
 
@@ -81,12 +201,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private autoRunDoneFor = new Set<string>();
   private history: { role: "user" | "assistant"; text: string }[] = [];
   private cmdRunner: CommandRunner;
+  private mcpManager: McpClientManager;
+  private currentTargetRoot?: vscode.Uri;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel
   ) {
     this.cmdRunner = new CommandRunner(output);
+    this.mcpManager = new McpClientManager(output);
   }
 
   resolveWebviewView(
@@ -155,7 +278,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       if (msg.type === "applyDiff") {
         try {
-          await this.applyDiffWithRepair(msg.diff, "Manual Apply All");
+          await this.applyDiffWithRepair(msg.diff, "Manual Apply All", this.currentTargetRoot);
           vscode.window.showInformationMessage("Safegraph AI: Applied validated changes.");
         } catch (e) {
           const formatted = formatApplyError(e);
@@ -199,9 +322,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
       if (msg.type === "runCommand") {
-        const folders = vscode.workspace.workspaceFolders;
-        const cwd = folders?.[0]?.uri.fsPath || process.cwd();
-        this.cmdRunner.run(msg.id, msg.cmd, cwd, (m) => webviewView.webview.postMessage(m));
+        const cwd = this.currentTargetRoot?.fsPath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
+        this.cmdRunner.runAndWait(msg.id, msg.cmd, cwd, (m) => webviewView.webview.postMessage(m)).then(result => {
+           const feedback = `[Command execution finished]\nCommand: ${msg.cmd}\nExit code: ${result.exitCode}\nOutput:\n${result.output.slice(-12000)}\n\nPlease continue analyzing or processing based on this result.`;
+           webviewView.webview.postMessage({ type: "commandFinishedAndFeedback", text: feedback });
+        });
         return;
       }
       if (msg.type === "cancelCommand") {
@@ -235,6 +360,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
 
           const cfg = vscode.workspace.getConfiguration("safegraph");
+          const targetRoot = await this.inferTargetRoot(msg.taggedFiles || []);
+          this.currentTargetRoot = targetRoot;
+          this.output.appendLine(`[safegraph-ai] target root: ${targetRoot?.fsPath || "(none)"}`);
           const region = String(cfg.get("region") || "ap-southeast-1");
           const modelId = String(
             cfg.get("modelId") ||
@@ -247,9 +375,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             includeFiles: (msg.taggedFiles || []).filter((p) => p !== "@Repository"),
             query: msg.text,
             storageUri: this.context.globalStorageUri,
-            includeRepository: true
+            includeRepository: true,
+            targetRoot
           });
+          const webResearch = await this.buildWebResearchBundle(msg.text);
           const maskedCtx = maskSensitive(ctx);
+          const maskedWebResearch = maskSensitive(webResearch);
           const maskedQuestion = maskSensitive(msg.text);
           const conversation = this.history
             .slice(-8)
@@ -273,6 +404,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 - Terminal commands and build systems
 - Product requirement analysis, UX design, UI mockups, and implementation-ready frontend design
 
+AUTONOMOUS TASK LOOP INSTRUCTIONS:
+- You are running in an AUTONOMOUS TASK LOOP. 
+- You can write code blocks (\`\`\`diff) or terminal commands (\`\`\`sh). The system will automatically apply the diffs and run the commands, then feed the output back to you in the next message.
+- If you need to see the output of a command or the result of a file change before continuing, end your response with [CONTINUE].
+- If you have fully achieved the user's goal and there is nothing else to do, end your response with [DONE]. When doing so, provide a clear, concise summary of all the actions you took and the files you modified during this autonomous session.
+- DO NOT say [DONE] if tests are failing or you haven't verified the fix.
+- The target root for this task is: ${maskSensitive(targetRoot?.fsPath || "(none)")}.
+- If the user tagged a folder, treat that folder as the working directory and write new files there unless the user explicitly names another path.
+- All diff paths must be relative to the target root, not to an older workspace root.
+- Before creating or editing files, verify the current directory with \`pwd\` when path ambiguity exists.
+- If the user provides one or more URLs and asks to research, use the WEB RESEARCH BUNDLE first. It contains the seed page plus related same-section documentation pages discovered from links/tabs/sidebar navigation.
+- If the WEB RESEARCH BUNDLE contains fetched pages, do not answer with only diagnostic shell commands such as curl/grep. Answer directly from the bundle or create/update the requested document.
+- If the WEB RESEARCH BUNDLE is missing, incomplete, or clearly too shallow, fetch additional pages with safe read-only commands such as \`curl -L <url>\` or a small Python urllib command before writing the final report.
+- For documentation sites with tabs/sidebar links, synthesize across all fetched related pages. Do not summarize only the seed URL when related pages are available.
+- Cite the source URLs used in the generated document.
+
 RESPONSE GUIDELINES:
 1. Reply in the same language as the user. If the user writes Vietnamese, use clear Vietnamese.
 2. Act like a pragmatic staff engineer: diagnose root causes, choose a maintainable fix, consider edge cases, and avoid fragile quick hacks unless the user clearly needs a temporary workaround.
@@ -282,7 +429,7 @@ RESPONSE GUIDELINES:
 6. Start with the fix or next action. Then give a short reason only if it helps the user make the right choice.
 7. Prefer concrete steps: what file to open, what command to run, what URL to visit, or what button to click.
 8. When explaining an error, use this shape: "Lỗi là...", "Cách sửa...", "Vì sao...". Keep each part short.
-9. For code changes, ALWAYS provide a complete unified diff in a fenced code block marked 'diff'. Safegraph will validate and apply it automatically.
+9. For code changes, ALWAYS provide a short user-facing summary first, then a complete unified diff in a fenced code block marked 'diff'. Safegraph will validate and apply it automatically.
 10. For terminal commands, put ONLY exact commands (one per line) in a fenced code block marked 'sh'. Safegraph will run safe commands automatically and ask only for sensitive commands.
 11. Use the file paths relative to workspace root.
 12. For new files: use --- /dev/null and +++ b/<path>.
@@ -295,10 +442,12 @@ RESPONSE GUIDELINES:
 19. For frontend design, use existing project conventions first. Build the actual usable screen, not a marketing explanation. Avoid generic one-color themes, oversized decorative cards, and visible text explaining how to use the UI.
 20. Make UI complete enough to inspect: realistic labels/data, responsive layout, clear primary actions, hover/focus states, error/empty/loading states where relevant.
 21. Before giving final text, make the code complete enough to run. Include verification commands after the diff when useful.
-22. Do not dump long explanations when a simple action is enough.
+22. Do not return a bare diff. Always explain what changed, which files are affected, and what the user should verify.
+23. Do not dump long explanations when a simple action is enough.
 
 CONTEXT:
 ${maskedCtx}
+${maskedWebResearch ? "\nWEB RESEARCH BUNDLE:\n" + maskedWebResearch : ""}
 ${conversation ? "\nRecent conversation:\n" + conversation : ""}
 ${tagged.length ? "\nTagged files (@):\n" + tagged.join("\n") : ""}
 ${atts.length ? "\nAttachments:\n" + atts.map((a) => `[${a.name}] ${a.text}`).join("\n\n") : ""}
@@ -315,102 +464,247 @@ ${maskedQuestion}`;
           };
           webviewView.webview.postMessage(thinking);
 
-          // Auto-continue if Bedrock stops due to max_tokens.
-          let combined = "";
-          let loops = 0;
-          let nextPrompt = prompt;
-          for (;;) {
-            const r = await bedrockConverse(nextPrompt, {
-              region,
-              modelId,
-              apiKey,
-              signal: this.currentAbort.signal,
-              maxTokens: 8192,
-              temperature: 0.2
-            });
-            combined = (combined + (combined ? "\n" : "") + r.text).trim();
-            loops += 1;
-            if (this.currentAbort.signal.aborted) throw new Error("aborted");
-            if (r.stopReason !== "max_tokens") break;
-            if (loops >= 3) break;
-            nextPrompt =
-              prompt +
-              "\n\nContinue from where you left off. Do not repeat earlier text. Keep following the original unified-diff and safe-command rules.\n\nPrevious output:\n" +
-              combined +
-              "\n\nContinue:";
-          }
+          const maxTaskLoops = 15;
+          let isDone = false;
+          let totalAcc = "";
 
-          const diffBlocks = extractDiffBlocks(combined);
-          let appliedDiff = false;
-          if (diffBlocks.length > 0) {
-            await this.applyDiffWithRepair(
-              diffBlocks.join("\n\n"),
-              "Autonomous chat code changes"
-            );
-            appliedDiff = true;
-            combined += "\n\nAgent: đã validate và apply code vào workspace.";
-          }
+          const messages: { role: "user" | "assistant"; text?: string; content?: any[] }[] = [
+            { role: "user", text: prompt }
+          ];
 
-          if (appliedDiff) {
-            const loopResult = await this.runAgentVerificationLoop({
-              initialAssistantText: combined,
-              userText: msg.text,
-              apiKey,
-              region,
-              modelId,
-              webview: webviewView.webview
-            });
-            if (loopResult) combined += `\n\n${loopResult}`;
-          }
+          const cfg2 = vscode.workspace.getConfiguration("safegraph");
+          const mode: AutoRunMode = msg.agentMode ? "safe" : "ask";
 
-          let acc = "";
-          const chunkSize = 80;
-          for (let i = 0; i < combined.length; i += chunkSize) {
-            if (this.currentAbort.signal.aborted) throw new Error("aborted");
-            acc += combined.slice(i, i + chunkSize);
-            const delta: ExtensionToWebviewMessage = {
-              type: "assistantMessage",
-              id: msg.id,
-              text: acc,
-              ts: Date.now(),
-              done: false
-            };
-            webviewView.webview.postMessage(delta);
-            await new Promise((r) => setTimeout(r, 25));
-          }
+          const cwd = targetRoot?.fsPath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
 
-          const reply: ExtensionToWebviewMessage = {
-            type: "assistantMessage",
-            id: msg.id,
-            text: acc,
-            ts: Date.now(),
-            done: true
-          };
-          webviewView.webview.postMessage(reply);
-          this.history.push({ role: "user", text: msg.text });
-          this.history.push({ role: "assistant", text: acc });
-          if (this.history.length > 16) {
-            this.history = this.history.slice(-16);
-          }
+          let toolConfig: any = undefined;
+          const toolsList: any[] = [];
 
-          // Cursor-like behavior: propose terminal commands in UI (no terminal panel pop).
-          if (!this.autoRunDoneFor.has(msg.id)) {
-            this.autoRunDoneFor.add(msg.id);
-            const cfg2 = vscode.workspace.getConfiguration("safegraph");
-            const mode = String(cfg2.get("autoRun") || "safe") as any;
-            const proposed = this.cmdRunner.proposeFromAssistantText(acc, mode);
-            if (proposed.length) {
-              webviewView.webview.postMessage({ type: "commandProposed", items: proposed, ts: Date.now() });
-              const folders = vscode.workspace.workspaceFolders;
-              const cwd = folders?.[0]?.uri.fsPath || process.cwd();
-              for (const item of proposed) {
-                if (item.decision === "allow") {
-                  this.cmdRunner.run(item.id, item.cmd, cwd, (m) => webviewView.webview.postMessage(m));
-                } else if (item.decision === "ask") {
-                  this.output.appendLine(`[safegraph-ai] command requires inline approval: ${item.cmd} (${item.reason})`);
+          // Connect default CodeGraph MCP
+          try {
+            const codegraphServerId = "codegraph";
+            await this.mcpManager.connectStdio(codegraphServerId, "npx", ["-y", "@colbymchenry/codegraph", "mcp"], process.env as Record<string, string>);
+            const cgTools = await this.mcpManager.listTools(codegraphServerId);
+            for (const t of cgTools.tools) {
+              toolsList.push({
+                toolSpec: {
+                  name: `mcp__${codegraphServerId}__${t.name}`,
+                  description: t.description || `MCP tool ${t.name}`,
+                  inputSchema: { json: t.inputSchema }
+                }
+              });
+            }
+          } catch (e) {
+            this.output.appendLine("Failed to start default codegraph MCP: " + String(e));
+          }
+          try {
+            const mcpJsonPath = path.join(cwd, ".vscode", "mcp.json");
+            if (fs.existsSync(mcpJsonPath)) {
+              const mcpConfig = JSON.parse(fs.readFileSync(mcpJsonPath, "utf8"));
+              if (mcpConfig) {
+                for (const [serverId, serverConfig] of Object.entries<any>(mcpConfig.mcpServers || {})) {
+                  try {
+                    await this.mcpManager.connectStdio(serverId, serverConfig.command, serverConfig.args, serverConfig.env);
+                    const tools = await this.mcpManager.listTools(serverId);
+                    for (const t of tools.tools) {
+                      toolsList.push({
+                        toolSpec: {
+                          name: `${serverId}__${t.name}`.replace(/[^a-zA-Z0-9_-]/g, "_"),
+                          description: t.description || "No description",
+                          inputSchema: {
+                            json: t.inputSchema
+                          }
+                        }
+                      });
+                    }
+                  } catch (e) {
+                    this.output.appendLine(`[MCP] Error connecting to ${serverId}: ${e}`);
+                  }
+                }
+                if (toolsList.length > 0) {
+                  toolConfig = { tools: toolsList };
                 }
               }
             }
+          } catch(e) {
+            this.output.appendLine(`[MCP] Error loading mcp.json: ${e}`);
+          }
+
+          for (let step = 0; step < maxTaskLoops; step++) {
+            if (this.currentAbort?.signal.aborted) throw new Error("aborted");
+
+            let combined = "";
+            let chunkLoops = 0;
+            let nextMessages = [...messages];
+
+            let isToolLoop = false;
+            for (;;) {
+              
+              const r = await bedrockConverse(nextMessages, {
+                region,
+                modelId,
+                apiKey,
+                signal: this.currentAbort?.signal,
+                maxTokens: 8192,
+                temperature: 0.2,
+                toolConfig
+              });
+              let rawContent = r.raw?.output?.message?.content || [];
+              let stopReason = String(r.stopReason || "");
+              combined = (combined + (combined ? "\n" : "") + r.text).trim();
+              chunkLoops += 1;
+              if (this.currentAbort?.signal.aborted) throw new Error("aborted");
+              
+              if (stopReason === "tool_use") {
+                const toolUses = rawContent.filter((c: any) => c.toolUse);
+                if (toolUses.length > 0) {
+                  messages.push({ role: "assistant", content: rawContent });
+                  webviewView.webview.postMessage({
+                    type: "assistantMessage",
+                    id: msg.id + "_tool_" + step,
+                    text: `Calling ${toolUses.length} tools...`,
+                    ts: Date.now(),
+                    done: false
+                  });
+
+                  let toolResults = [];
+                  for (const tu of toolUses) {
+                    const call = tu.toolUse;
+                    try {
+                      // parse serverId__toolName
+                      const nameParts = call.name.split("__");
+                      const serverId = nameParts[0];
+                      const toolName = nameParts.slice(1).join("__");
+                      this.output.appendLine(`[MCP] Calling ${serverId} -> ${toolName}`);
+                      
+                      const result = await this.mcpManager.callTool(serverId, toolName, call.input);
+                      
+                      // extract text content from result
+                      let resultText = "";
+                      if (result && Array.isArray(result.content)) {
+                        resultText = result.content.map((c:any) => c.text).join("\n");
+                      } else {
+                        resultText = JSON.stringify(result);
+                      }
+
+                      toolResults.push({
+                        toolResult: {
+                          toolUseId: call.toolUseId,
+                          content: [{ text: resultText.slice(0, 8000) }],
+                          status: "success"
+                        }
+                      });
+                    } catch(e) {
+                      toolResults.push({
+                        toolResult: {
+                          toolUseId: call.toolUseId,
+                          content: [{ text: String(e) }],
+                          status: "error"
+                        }
+                      });
+                    }
+                  }
+                  messages.push({ role: "user", content: toolResults });
+                  isToolLoop = true;
+                  break; // break the chunk loop, and we will continue the main loop
+                }
+              }
+
+              if (stopReason !== "max_tokens" || chunkLoops >= 3) break;
+
+              nextMessages = [
+                ...messages,
+                { role: "assistant", text: combined },
+                { role: "user", text: "Continue from where you left off. Do not repeat earlier text." }
+              ];
+            }
+
+            if (isToolLoop) continue;
+            
+            // Clean up the text for the UI by removing [CONTINUE] and [DONE]
+            let uiText = combined.replace(/\[CONTINUE\]/g, "").replace(/\[DONE\]/g, "").trim();
+            const baseAcc = totalAcc + (totalAcc && uiText ? "\n\n---\n\n" : "");
+            
+            messages.push({ role: "assistant", text: combined });
+            if (uiText) {
+              totalAcc = baseAcc + uiText;
+            }
+
+            let accChunk = "";
+            const chunkSize = 80;
+            for (let i = 0; i < uiText.length; i += chunkSize) {
+              if (this.currentAbort?.signal.aborted) throw new Error("aborted");
+              accChunk += uiText.slice(i, i + chunkSize);
+              webviewView.webview.postMessage({
+                type: "assistantMessage",
+                id: msg.id,
+                text: baseAcc + accChunk,
+                ts: Date.now(),
+                done: false
+              });
+              await new Promise((r) => setTimeout(r, 10));
+            }
+
+            const diffBlocks = extractDiffBlocks(combined);
+            let loopFeedback = "";
+
+            if (diffBlocks.length > 0) {
+              try {
+                await this.applyDiffWithRepair(diffBlocks.join("\n\n"), "Autonomous chat code changes", targetRoot);
+                loopFeedback += "Diff applied successfully.\n";
+              } catch (e) {
+                loopFeedback += "Failed to apply diff: " + String(e) + "\n";
+              }
+            }
+
+            const proposed = this.cmdRunner.proposeFromAssistantText(combined, mode);
+            const runnable = proposed.filter((item) => item.decision === "allow");
+            const askOrDenied = proposed.filter((item) => item.decision !== "allow");
+
+            if (askOrDenied.length > 0) {
+              webviewView.webview.postMessage({ type: "commandProposed", items: askOrDenied, ts: Date.now() });
+            }
+
+            if (runnable.length > 0) {
+              webviewView.webview.postMessage({ type: "commandProposed", items: runnable, ts: Date.now() });
+              for (const item of runnable) {
+                if (this.currentAbort?.signal.aborted) break;
+                const result = await this.cmdRunner.runAndWait(item.id, item.cmd, cwd, (m) => webviewView.webview.postMessage(m));
+                loopFeedback += `Command: ${item.cmd}\nExit code: ${result.exitCode}\nOutput:\n${result.output.slice(-12000)}\n\n`;
+              }
+            }
+
+            if (combined.includes("[DONE]")) {
+              isDone = true;
+              break;
+            }
+
+            // If there are no auto-runnable actions (no commands to run, no diffs to apply),
+            // we MUST break the loop. Otherwise, we would just be polling the AI with
+            // "Please continue" without giving it any new information, causing an infinite loop.
+            if (runnable.length === 0 && diffBlocks.length === 0) {
+              break;
+            }
+
+            if (loopFeedback) {
+              messages.push({ role: "user", text: `Execution results:\n\`\`\`\n${loopFeedback.trim()}\n\`\`\`\nWhat is the next step? Use [CONTINUE] or [DONE].` });
+            } else {
+              messages.push({ role: "user", text: "Please continue your task. Use [CONTINUE] or [DONE]." });
+            }
+          }
+
+          webviewView.webview.postMessage({
+            type: "assistantMessage",
+            id: msg.id,
+            text: totalAcc,
+            ts: Date.now(),
+            done: true
+          });
+
+          this.history.push({ role: "user", text: msg.text });
+          this.history.push({ role: "assistant", text: totalAcc });
+          if (this.history.length > 16) {
+            this.history = this.history.slice(-16);
           }
         } catch (e) {
           if (String(e instanceof Error ? e.message : e).toLowerCase().includes("aborted")) {
@@ -586,6 +880,161 @@ ${maskedQuestion}`;
     }
   }
 
+  private async inferTargetRoot(taggedFiles: string[]) {
+    for (const tagged of taggedFiles.filter((p) => p && p !== "@Repository")) {
+      const uri = await this.resolveTaggedUri(tagged);
+      if (!uri) continue;
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        if (stat.type === vscode.FileType.Directory) return uri;
+        const folder = vscode.workspace.getWorkspaceFolder(uri);
+        if (folder) return folder.uri;
+      } catch {
+        const folder = vscode.workspace.getWorkspaceFolder(uri);
+        if (folder) return folder.uri;
+      }
+    }
+
+    const activeUri = vscode.window.activeTextEditor?.document.uri;
+    if (activeUri) {
+      const activeFolder = vscode.workspace.getWorkspaceFolder(activeUri);
+      if (activeFolder) return activeFolder.uri;
+    }
+
+    return vscode.workspace.workspaceFolders?.[0]?.uri;
+  }
+
+  private async resolveTaggedUri(taggedPath: string) {
+    if (taggedPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(taggedPath)) {
+      return vscode.Uri.file(taggedPath);
+    }
+
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    for (const folder of folders) {
+      const direct = vscode.Uri.joinPath(folder.uri, taggedPath);
+      try {
+        await vscode.workspace.fs.stat(direct);
+        return direct;
+      } catch {
+        // Try the next workspace folder.
+      }
+    }
+
+    return folders[0] ? vscode.Uri.joinPath(folders[0].uri, taggedPath) : vscode.Uri.file(taggedPath);
+  }
+
+  private async buildWebResearchBundle(userText: string) {
+    const urls = extractUrls(userText).slice(0, 4);
+    if (urls.length === 0) return "";
+
+    const parts: string[] = [];
+    const visited = new Set<string>();
+    const maxPagesPerSeed = 12;
+    const maxCharsPerPage = 9000;
+    const maxTotalChars = 60_000;
+
+    for (const seed of urls) {
+      try {
+        const seedHtml = await this.fetchUrlText(seed);
+        const seedTitle = extractPageTitle(seedHtml) || seed;
+        const related = uniqueLinks([
+          ...inferredDocsSiblingLinks(seed),
+          ...extractRelatedLinks(seedHtml, seed)
+        ])
+          .filter((link) => sameDocsSection(new URL(seed), new URL(link.url)))
+          .filter((link) => link.url !== seed.replace(/\/$/, ""))
+          .slice(0, maxPagesPerSeed - 1);
+        const queue = [{ url: seed, label: seedTitle }, ...related];
+
+        parts.push(`Seed URL: ${seed}`);
+        parts.push(`Discovered related same-section pages (${related.length}):`);
+        parts.push(related.map((link) => `- ${link.label || link.url}: ${link.url}`).join("\n") || "- (none)");
+
+        for (const item of queue) {
+          if (visited.has(item.url)) continue;
+          visited.add(item.url);
+          try {
+            const html = item.url === seed ? seedHtml : await this.fetchUrlText(item.url);
+            const title = extractPageTitle(html) || item.label || item.url;
+            const text = htmlToReadableText(html);
+            if (!text) continue;
+            const body =
+              text.length > maxCharsPerPage
+                ? `${text.slice(0, Math.floor(maxCharsPerPage * 0.65))}\n\n[...page truncated...]\n\n${text.slice(-Math.floor(maxCharsPerPage * 0.35))}`
+                : text;
+            parts.push(`\n--- Web page: ${title} ---\nURL: ${item.url}\n${body}`);
+            if (parts.join("\n\n").length >= maxTotalChars) {
+              parts.push("\n[...web research bundle truncated by Safegraph AI...]");
+              return parts.join("\n\n").slice(0, maxTotalChars);
+            }
+          } catch (pageError) {
+            parts.push(`\n--- Web page fetch failed ---\nURL: ${item.url}\nError: ${String(pageError)}`);
+          }
+        }
+      } catch (seedError) {
+        parts.push(`Seed URL fetch failed: ${seed}\nError: ${String(seedError)}`);
+      }
+    }
+
+    const bundle = parts.join("\n\n");
+    if (bundle) this.output.appendLine(`[safegraph-ai] web research bundle: ${visited.size} page(s), ${bundle.length} chars`);
+    return bundle.slice(0, maxTotalChars);
+  }
+
+  private fetchUrlText(rawUrl: string, redirectCount = 0): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let url: URL;
+      try {
+        url = new URL(rawUrl);
+      } catch {
+        reject(new Error(`Invalid URL: ${rawUrl}`));
+        return;
+      }
+
+      const client = url.protocol === "http:" ? http : https;
+      const req = client.request(
+        url,
+        {
+          method: "GET",
+          headers: {
+            "User-Agent": "safegraph-ai-vscode/0.8.0",
+            Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5"
+          },
+          timeout: 20_000
+        },
+        (res) => {
+          const statusCode = res.statusCode || 0;
+          const location = res.headers.location;
+          if (statusCode >= 300 && statusCode < 400 && location && redirectCount < 5) {
+            res.resume();
+            resolve(this.fetchUrlText(new URL(location, url).toString(), redirectCount + 1));
+            return;
+          }
+          if (statusCode < 200 || statusCode >= 300) {
+            res.resume();
+            reject(new Error(`HTTP ${statusCode}`));
+            return;
+          }
+
+          const chunks: Buffer[] = [];
+          let total = 0;
+          res.on("data", (chunk) => {
+            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            total += buf.length;
+            if (total <= 2_000_000) chunks.push(buf);
+          });
+          res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        }
+      );
+
+      req.on("timeout", () => {
+        req.destroy(new Error("request timeout"));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  }
+
   private modelConfig() {
     const cfg = vscode.workspace.getConfiguration("safegraph");
     return {
@@ -619,119 +1068,25 @@ ${maskedQuestion}`;
     return combined;
   }
 
-  private async runAgentVerificationLoop(options: {
-    initialAssistantText: string;
-    userText: string;
-    apiKey: string;
-    region: string;
-    modelId: string;
-    webview: vscode.Webview;
-  }) {
-    const cfg = vscode.workspace.getConfiguration("safegraph");
-    const mode = String(cfg.get("autoRun") || "safe") as any;
-    const maxLoops = Math.max(0, Math.min(3, Number(cfg.get("agent.maxFixLoops", 2))));
-    if (maxLoops <= 0) return "";
 
-    const folders = vscode.workspace.workspaceFolders;
-    const cwd = folders?.[0]?.uri.fsPath || process.cwd();
-    let assistantText = options.initialAssistantText;
-    const notes: string[] = [];
-
-    for (let loop = 1; loop <= maxLoops; loop += 1) {
-      const proposed = this.cmdRunner.proposeFromAssistantText(assistantText, mode);
-      const runnable = proposed.filter((item) => item.decision === "allow");
-      const askOrDenied = proposed.filter((item) => item.decision !== "allow");
-      if (askOrDenied.length > 0) {
-        options.webview.postMessage({ type: "commandProposed", items: askOrDenied, ts: Date.now() });
-      }
-      if (runnable.length === 0) {
-        if (loop === 1) notes.push("Agent verify: không có lệnh safe auto-run trong phản hồi.");
-        break;
-      }
-
-      options.webview.postMessage({ type: "commandProposed", items: runnable, ts: Date.now() });
-      const results: CommandRunResult[] = [];
-      for (const item of runnable.slice(0, 4)) {
-        if (this.currentAbort?.signal.aborted) throw new Error("aborted");
-        const result = await this.cmdRunner.runAndWait(item.id, item.cmd, cwd, (m) => options.webview.postMessage(m));
-        results.push(result);
-        if (result.status !== "success") break;
-      }
-
-      const failed = results.find((r) => r.status !== "success");
-      if (!failed) {
-        notes.push(`Agent verify loop ${loop}: ${results.length} command(s) passed.`);
-        break;
-      }
-
-      notes.push(`Agent verify loop ${loop}: command failed: ${failed.cmd}`);
-      const terminalLog = failed.output.slice(-12000);
-      const ctx = await buildContext({
-        maxChars: 24000,
-        maxFiles: 80,
-        query: `${options.userText}\n${failed.cmd}\n${terminalLog}`,
-        storageUri: this.context.globalStorageUri,
-        includeRepository: true
-      });
-      const repairPrompt = `You are Safegraph AI continuing an autonomous edit-test-fix loop in VS Code.
-The previous code changes were applied, then this verification command failed.
-Return ONLY:
-1. A clean fenced \`\`\`diff block if a code/config change is needed.
-2. Safe verification commands in a fenced \`\`\`sh block.
-No long explanation.
-
-Original user request:
-${maskSensitive(options.userText)}
-
-Failed command:
-${failed.cmd}
-
-Terminal log:
-\`\`\`
-${maskSensitive(terminalLog)}
-\`\`\`
-
-Workspace context:
-${maskSensitive(ctx)}`;
-
-      const repair = await this.converseComplete(repairPrompt, {
-        region: options.region,
-        modelId: options.modelId,
-        apiKey: options.apiKey,
-        maxTokens: 8192,
-        temperature: 0.1
-      });
-      const diffs = extractDiffBlocks(repair);
-      if (diffs.length === 0) {
-        notes.push(`Agent verify loop ${loop}: model did not return a repair diff.`);
-        assistantText = repair;
-        break;
-      }
-
-      await this.applyDiffWithRepair(diffs.join("\n\n"), `Agent verification repair loop ${loop}`);
-      notes.push(`Agent verify loop ${loop}: applied repair diff.`);
-      assistantText = repair;
-    }
-
-    return notes.length ? notes.join("\n") : "";
-  }
-
-  private async repairDiffWithBedrock(diff: string, errorMessage: string, reason: string) {
+  private async repairDiffWithBedrock(diff: string, errorMessage: string, reason: string, targetRoot?: vscode.Uri) {
     const apiKey = await this.loadApiKey();
     if (!apiKey) throw new Error(`Cannot repair diff automatically: missing Bedrock API key. Original error: ${errorMessage}`);
 
     const { region, modelId } = this.modelConfig();
     const ctx = await buildContext({
       maxChars: 24000,
-      maxFiles: 80
+      maxFiles: 80,
+      targetRoot
     });
-    const currentFiles = await this.currentFilesForDiff(diff);
+    const currentFiles = await this.currentFilesForDiff(diff, targetRoot);
 
     const prompt = `You are repairing a unified diff before it is applied in VS Code.
 Return ONLY one clean fenced code block marked diff. No explanation outside the diff block.
 
 Rules:
 - Use valid unified diff syntax only.
+- Diff file paths must be relative to the target root: ${maskSensitive(targetRoot?.fsPath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || "(none)")}.
 - Every hunk body line must start with exactly one of: space, +, -.
 - Regenerate the patch against the CURRENT FILE CONTENTS below, not against stale context from the invalid diff.
 - If the original patch intent is already present in the current file, return an empty diff block.
@@ -765,16 +1120,13 @@ ${diff}
     });
 
     const match = repaired.text.match(/```diff\s*([\s\S]*?)```/i);
-    const repairedDiff = (match ? match[1] : repaired.text).trim();
-    if (!repairedDiff) throw new Error(`Diff repair returned empty output. Original error: ${errorMessage}`);
-    return repairedDiff;
+    return (match ? match[1] : repaired.text).trim();
   }
 
-  private async currentFilesForDiff(diff: string) {
+  private async currentFilesForDiff(diff: string, targetRoot?: vscode.Uri) {
     try {
-      const folders = vscode.workspace.workspaceFolders;
-      if (!folders?.length) return "";
-      const root = folders[0].uri;
+      const root = targetRoot || vscode.workspace.workspaceFolders?.[0]?.uri;
+      if (!root) return "";
       const patches = parseUnifiedDiff(diff);
       const parts: string[] = [];
       for (const patch of patches.slice(0, 6)) {
@@ -802,17 +1154,21 @@ ${diff}
     }
   }
 
-  private async prepareDiffForApply(diff: string, reason: string) {
+  private async prepareDiffForApply(diff: string, reason: string, targetRoot?: vscode.Uri) {
     try {
-      await preflightUnifiedDiffAgainstWorkspace(diff);
+      await preflightUnifiedDiffAgainstWorkspace(diff, { rootUri: targetRoot });
       return diff;
     } catch (firstError) {
       const firstMessage = String(firstError instanceof Error ? firstError.message : firstError);
       this.output.appendLine(`[safegraph-ai] preflight failed before apply: ${firstMessage}`);
 
-      const repairedDiff = await this.repairDiffWithBedrock(diff, firstMessage, reason);
+      const repairedDiff = await this.repairDiffWithBedrock(diff, firstMessage, reason, targetRoot);
+      if (!repairedDiff.trim()) {
+        this.output.appendLine("[safegraph-ai] diff repair returned empty diff; treating as no-op");
+        return "";
+      }
       try {
-        await preflightUnifiedDiffAgainstWorkspace(repairedDiff);
+        await preflightUnifiedDiffAgainstWorkspace(repairedDiff, { rootUri: targetRoot });
         this.output.appendLine("[safegraph-ai] repaired diff passed preflight");
         return repairedDiff;
       } catch (secondError) {
@@ -821,19 +1177,25 @@ ${diff}
         const secondRepair = await this.repairDiffWithBedrock(
           repairedDiff,
           `${firstMessage}\nSecond repair failed: ${secondMessage}`,
-          `${reason}; repair retry against current file contents`
+          `${reason}; repair retry against current file contents`,
+          targetRoot
         );
-        await preflightUnifiedDiffAgainstWorkspace(secondRepair);
+        if (!secondRepair.trim()) {
+          this.output.appendLine("[safegraph-ai] second diff repair returned empty diff; treating as no-op");
+          return "";
+        }
+        await preflightUnifiedDiffAgainstWorkspace(secondRepair, { rootUri: targetRoot });
         this.output.appendLine("[safegraph-ai] second repaired diff passed preflight");
         return secondRepair;
       }
     }
   }
 
-  private async applyDiffWithRepair(diff: string, reason: string) {
-    const prepared = await this.prepareDiffForApply(diff, reason);
+  private async applyDiffWithRepair(diff: string, reason: string, targetRoot?: vscode.Uri) {
+    const prepared = await this.prepareDiffForApply(diff, reason, targetRoot);
+    if (!prepared.trim()) return;
     try {
-      await applyUnifiedDiffToWorkspaceSmart(prepared, this.output);
+      await applyUnifiedDiffToWorkspaceSmart(prepared, this.output, { rootUri: targetRoot });
       return;
     } catch (firstApplyError) {
       const firstApplyMessage = String(firstApplyError instanceof Error ? firstApplyError.message : firstApplyError);
@@ -844,11 +1206,16 @@ ${diff}
       const repaired = await this.repairDiffWithBedrock(
         prepared,
         firstApplyMessage,
-        `${reason}; apply failed after preflight`
+        `${reason}; apply failed after preflight`,
+        targetRoot
       );
-      await preflightUnifiedDiffAgainstWorkspace(repaired);
+      if (!repaired.trim()) {
+        this.output.appendLine("[safegraph-ai] apply repair returned empty diff; treating as no-op");
+        return;
+      }
+      await preflightUnifiedDiffAgainstWorkspace(repaired, { rootUri: targetRoot });
       try {
-        await applyUnifiedDiffToWorkspaceSmart(repaired, this.output);
+        await applyUnifiedDiffToWorkspaceSmart(repaired, this.output, { rootUri: targetRoot });
         return;
       } catch (secondApplyError) {
         const secondApplyMessage = String(secondApplyError instanceof Error ? secondApplyError.message : secondApplyError);
@@ -856,10 +1223,15 @@ ${diff}
         const secondRepair = await this.repairDiffWithBedrock(
           repaired,
           `${firstApplyMessage}\nRepaired apply failed: ${secondApplyMessage}`,
-          `${reason}; second apply repair against current files`
+          `${reason}; second apply repair against current files`,
+          targetRoot
         );
-        await preflightUnifiedDiffAgainstWorkspace(secondRepair);
-        await applyUnifiedDiffToWorkspaceSmart(secondRepair, this.output);
+        if (!secondRepair.trim()) {
+          this.output.appendLine("[safegraph-ai] second apply repair returned empty diff; treating as no-op");
+          return;
+        }
+        await preflightUnifiedDiffAgainstWorkspace(secondRepair, { rootUri: targetRoot });
+        await applyUnifiedDiffToWorkspaceSmart(secondRepair, this.output, { rootUri: targetRoot });
       }
     }
   }
