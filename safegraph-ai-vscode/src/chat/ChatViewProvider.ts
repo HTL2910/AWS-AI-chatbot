@@ -410,6 +410,12 @@ AUTONOMOUS TASK LOOP INSTRUCTIONS:
 - If you need to see the output of a command or the result of a file change before continuing, end your response with [CONTINUE].
 - If you have fully achieved the user's goal and there is nothing else to do, end your response with [DONE]. When doing so, provide a clear, concise summary of all the actions you took and the files you modified during this autonomous session.
 - DO NOT say [DONE] if tests are failing or you haven't verified the fix.
+- Mandatory task protocol:
+  1. Plan: before any diff or command, state a short concrete plan with target files/folders and verification approach.
+  2. Actions: every response that changes files or proposes commands must state what action is being taken and why.
+  3. Verification: after execution results, explain what passed/failed and either repair the issue or give the next verification step.
+  4. Final Summary: the final [DONE] response must include files changed, commands run, verification result, and any remaining risk.
+- Never output only a diff block or only a shell command. Include the relevant Plan/Actions/Verification/Final Summary text around it.
 - The target root for this task is: ${maskSensitive(targetRoot?.fsPath || "(none)")}.
 - If the user tagged a folder, treat that folder as the working directory and write new files there unless the user explicitly names another path.
 - All diff paths must be relative to the target root, not to an older workspace root.
@@ -443,7 +449,8 @@ RESPONSE GUIDELINES:
 20. Make UI complete enough to inspect: realistic labels/data, responsive layout, clear primary actions, hover/focus states, error/empty/loading states where relevant.
 21. Before giving final text, make the code complete enough to run. Include verification commands after the diff when useful.
 22. Do not return a bare diff. Always explain what changed, which files are affected, and what the user should verify.
-23. Do not dump long explanations when a simple action is enough.
+23. Use these exact short section labels when appropriate: Plan, Actions, Verification, Final Summary.
+24. Do not dump long explanations when a simple action is enough.
 
 CONTEXT:
 ${maskedCtx}
@@ -687,9 +694,9 @@ ${maskedQuestion}`;
             }
 
             if (loopFeedback) {
-              messages.push({ role: "user", text: `Execution results:\n\`\`\`\n${loopFeedback.trim()}\n\`\`\`\nWhat is the next step? Use [CONTINUE] or [DONE].` });
+              messages.push({ role: "user", text: `Execution results:\n\`\`\`\n${loopFeedback.trim()}\n\`\`\`\nRespond using the mandatory task protocol:\n- Verification: state what passed/failed from these results.\n- Actions: if repair or follow-up work is needed, provide the next diff/commands and why.\n- Final Summary: only if complete, include files changed, commands run, verification result, and remaining risk, then end with [DONE].\nOtherwise end with [CONTINUE].` });
             } else {
-              messages.push({ role: "user", text: "Please continue your task. Use [CONTINUE] or [DONE]." });
+              messages.push({ role: "user", text: "Please continue using the mandatory task protocol. Include Actions or Verification as appropriate. Use [CONTINUE] or a complete Final Summary followed by [DONE]." });
             }
           }
 
@@ -997,7 +1004,7 @@ ${maskedQuestion}`;
         {
           method: "GET",
           headers: {
-            "User-Agent": "safegraph-ai-vscode/0.8.0",
+            "User-Agent": "safegraph-ai-vscode/0.8.1",
             Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5"
           },
           timeout: 20_000
