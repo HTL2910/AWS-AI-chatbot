@@ -1,177 +1,135 @@
-# 🤖 AWS Bedrock Chatbot - Streamlit
+# SafeGraph AI
 
-Một ứng dụng Chatbot hiện đại xây dựng bằng **Streamlit** và **Amazon Bedrock**, có giao diện giống ChatGPT với lịch sử chat được lưu trữ.
+SafeGraph AI is a local AI coding assistant project built around an AWS Bedrock-powered VS Code extension. The repository also keeps earlier Bedrock chatbot prototypes for web and Streamlit testing.
 
-## ✨ Tính Năng
+## Current Status
 
-- 💬 **Chat Interface** - Giao diện giống ChatGPT
-- 🤖 **Multiple Models** - Hỗ trợ Claude 3.5 Sonnet, Opus, Haiku
-- 📝 **Chat History** - Lưu lịch sử chat trong session
-- 💾 **Export Chat** - Lưu chat history dưới dạng JSON
-- 🔐 **Secure Credentials** - Cấu hình AWS credentials an toàn
-- 🌍 **Multi-Region** - Hỗ trợ nhiều AWS regions
-- ⚡ **Real-time Response** - Phản hồi nhanh từ Bedrock
+- Main product: `safegraph-ai-vscode/`
+- Current extension version: `0.8.1`
+- Bedrock region default: `ap-southeast-1`
+- Authentication: Amazon Bedrock API key from VS Code SecretStorage, environment variables, or local `.env`
+- Packaged builds: `.vsix` files are stored under `safegraph-ai-vscode/`
 
-## 📋 Yêu Cầu
+## Repository Layout
 
-- Python 3.8+
-- AWS Account với Bedrock access
-- pip (Python package manager)
-
-## 🚀 Cài Đặt Nhanh
-
-### 1. Clone hoặc Download Project
-
-```bash
-cd aws-bedrock-chatbot
+```text
+.
+├── safegraph-ai-vscode/       # VS Code extension source and packaged VSIX builds
+├── chatbot-web/               # Flask web chatbot prototype using Bedrock API keys
+├── src/                       # Streamlit app and credential setup scripts
+├── docs/                      # Setup, credential, and usage notes
+├── config/                    # Python requirements and env examples
+├── examples/                  # Bedrock usage examples
+└── README.md                  # This file
 ```
 
-### 2. Cài Đặt Dependencies
+## VS Code Extension
+
+The extension provides:
+
+- Sidebar chat view inside VS Code
+- Bedrock chat integration
+- Local repository context/RAG
+- Inline edit command with `Cmd+K` on macOS or `Ctrl+K` on Windows/Linux
+- Accept/reject inline edits with `Cmd/Ctrl+Enter` and `Esc`
+- Safe command auto-run setting for agent workflows
+
+### Install From VSIX
+
+Use the latest package in `safegraph-ai-vscode/`, for example:
+
+```bash
+code --install-extension safegraph-ai-vscode/safegraph-ai-0.8.1.vsix --force
+```
+
+Or in VS Code:
+
+```text
+Extensions: Install from VSIX...
+```
+
+### Develop The Extension
+
+```bash
+cd safegraph-ai-vscode
+npm install
+npm run build
+```
+
+Open `safegraph-ai-vscode/` in VS Code and press `F5` to launch an Extension Development Host.
+
+### Package A New VSIX
+
+```bash
+cd safegraph-ai-vscode
+npm run package
+```
+
+## Bedrock API Key Configuration
+
+The extension checks for a Bedrock API key in this order:
+
+1. Environment variables: `AWS_BEARER_TOKEN_BEDROCK`, `API_KEY`, `BEDROCK_API_KEY`, `AWS_BEDROCK_API_KEY`
+2. Workspace `.env` files
+3. VS Code SecretStorage via `Safegraph AI: Set Bedrock API Key`
+
+Recommended local `.env` format:
+
+```env
+API_KEY="bedrock-api-key-..."
+ARN="arn:aws:bedrock:ap-southeast-1:ACCOUNT_ID:application-inference-profile/PROFILE_ID"
+```
+
+Do not commit real `.env` files or real API keys.
+
+## Web Chatbot Prototype
+
+The Flask prototype lives in `chatbot-web/`.
+
+```bash
+cd chatbot-web
+pip install -r requirements.txt
+python app.py
+```
+
+Default URL:
+
+```text
+http://localhost:5001
+```
+
+It reads credentials from the repo root `.env` and `chatbot-web/.env`.
+
+## Streamlit Prototype
+
+The older Streamlit app is still available under `src/`.
 
 ```bash
 pip install -r config/requirements.txt
-```
-
-### 3. Cấu Hình AWS Credentials
-
-```bash
-python src/setup_credentials.py
-```
-
-### 4. Chạy Ứng Dụng
-
-```bash
 streamlit run src/app.py
 ```
 
-Ứng dụng sẽ mở tại: `http://localhost:8501`
-
-## 📖 Hướng Dẫn Chi Tiết
-
-Xem thư mục `docs/` để có hướng dẫn chi tiết:
-
-- **docs/START_HERE.md** - Bắt đầu nhanh (5 phút)
-- **docs/HOW_TO_USE.md** - Cách sử dụng ứng dụng
-- **docs/HUONG_DAN_AWS.md** - Hướng dẫn AWS
-- **docs/CREDENTIALS_GUIDE.md** - Hướng dẫn credentials
-
-## 📁 Cấu Trúc Project
-
-```
-aws-bedrock-chatbot/
-├── src/                          # Source code
-│   ├── app.py                   # Ứng dụng Streamlit chính
-│   └── setup_credentials.py     # Cấu hình credentials
-│
-├── docs/                         # Tài liệu
-│   ├── START_HERE.md            # Bắt đầu nhanh
-│   ├── README.md                # Tài liệu chính
-│   ├── HOW_TO_USE.md            # Cách sử dụng
-│   ├── HUONG_DAN_AWS.md         # Hướng dẫn AWS
-│   ├── CREDENTIALS_GUIDE.md     # Hướng dẫn credentials
-│   └── ...
-│
-├── examples/                     # Ví dụ
-│   └── example_usage.py         # 7 ví dụ sử dụng API
-│
-├── config/                       # Cấu hình
-│   ├── requirements.txt         # Dependencies
-│   └── .env.example             # Ví dụ .env
-│
-├── .gitignore                    # Git ignore
-└── README.md                     # File này
-```
-
-## 🔧 Cấu Hình AWS Credentials
-
-### Cách 1: Setup Script (Khuyến nghị)
+Credential helper:
 
 ```bash
 python src/setup_credentials.py
 ```
 
-### Cách 2: Cấu Hình Thủ Công
+## Security Notes
 
-Tạo file `.env` ở root directory:
+- Real API keys must stay out of Git.
+- `.env` files are ignored and should remain local.
+- Prefer VS Code SecretStorage for the extension.
+- Rotate/revoke any key that was shared, logged, or committed.
+- After rewriting history, avoid merging old remote branches back into clean branches.
 
-```env
-AWS_ACCESS_KEY_ID=your_access_key
-AWS_SECRET_ACCESS_KEY=your_secret_key
-AWS_DEFAULT_REGION=us-east-1
-```
+## Useful Docs
 
-### Cách 3: AWS CLI
+- [SafeGraph VS Code install guide](safegraph-ai-vscode/INSTALL.md)
+- [Renew API key guide](docs/RENEW_API_KEY.md)
+- [AWS credential guide](docs/CREDENTIALS_GUIDE.md)
+- [Project docs index](docs/INDEX.md)
 
-```bash
-aws configure
-```
+## License
 
-## 🎯 Sử Dụng Ứng Dụng
-
-1. **Chạy ứng dụng:** `streamlit run src/app.py`
-2. **Mở Sidebar** (bên trái)
-3. **Nhập API Key** (nếu chưa cấu hình .env)
-4. **Chọn Model** - Khuyến nghị: Claude 3.5 Sonnet
-5. **Chọn Region** - Gần nhất với bạn
-6. **Click "🔧 Cấu Hình Kết Nối"**
-7. **Bắt đầu chat!**
-
-## 🤖 Models Khả Dụng
-
-| Model | Tốc Độ | Chất Lượng | Giá | Khuyến Nghị |
-|-------|--------|-----------|-----|-----------|
-| Claude 3.5 Sonnet | ⚡⚡⚡ | ⭐⭐⭐⭐⭐ | $ | ✅ |
-| Claude 3 Opus | ⚡⚡ | ⭐⭐⭐⭐⭐ | $$ | Cho tasks phức tạp |
-| Claude 3 Haiku | ⚡⚡⚡⚡ | ⭐⭐⭐ | $ | Cho tasks đơn giản |
-
-## 🌍 Regions Hỗ Trợ
-
-- `us-east-1` (N. Virginia) - ✅ Khuyến nghị
-- `us-west-2` (Oregon)
-- `eu-west-1` (Ireland)
-- `ap-southeast-1` (Singapore)
-
-## 🛡️ Bảo Mật
-
-### ✅ Nên Làm
-- Lưu credentials trong .env
-- Sử dụng IAM User (không Root)
-- Giới hạn quyền (chỉ Bedrock)
-- Rotate keys định kỳ
-- Sử dụng MFA
-
-### ❌ Không Nên Làm
-- Không commit .env lên Git
-- Không chia sẻ Secret Key
-- Không hardcode credentials
-- Không sử dụng Root Account
-
-## 🐛 Troubleshooting
-
-| Lỗi | Giải Pháp |
-|-----|----------|
-| ModuleNotFoundError | `pip install -r config/requirements.txt` |
-| InvalidSignatureException | Kiểm tra API Key trong .env |
-| AccessDenied | Thêm Bedrock policy trong IAM |
-| ModelNotFound | Thử region khác (us-west-2) |
-
-## 📚 Tài Liệu Tham Khảo
-
-- [AWS Bedrock Docs](https://docs.aws.amazon.com/bedrock/)
-- [Boto3 Documentation](https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/bedrock-runtime.html)
-- [Streamlit Docs](https://docs.streamlit.io/)
-- [Claude API Guide](https://docs.anthropic.com/claude/reference/getting-started-with-the-api)
-
-## 📄 License
-
-MIT License - Tự do sử dụng cho mục đích cá nhân và thương mại.
-
-## 🎉 Chúc Bạn Thành Công!
-
-Nếu có bất kỳ câu hỏi nào, vui lòng tham khảo thư mục `docs/` hoặc liên hệ support.
-
----
-
-**Phiên bản:** 1.0.0  
-**Cập nhật lần cuối:** May 2026  
-**Tác giả:** AWS Bedrock Chatbot Team
+See [LICENSE](LICENSE).
