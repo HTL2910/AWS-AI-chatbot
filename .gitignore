@@ -63,6 +63,12 @@ logs/
 *.bak
 *.backup
 
+# Session history (track summaries, ignore temp)
+.session-history/*.tmp
+.session-history/*.cache
+.session-history/.DS_Store
+# But DO track SUMMARY_*.md files (see .gitignore in .session-history/)
+
 # OS
 .DS_Store
 Thumbs.db

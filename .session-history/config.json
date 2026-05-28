@@ -1,0 +1,15 @@
+{
+  "auto_generate": true,
+  "auto_save": true,
+  "include_git_stats": true,
+  "include_test_results": true,
+  "include_quality_checks": true,
+  "max_summaries_to_keep": 50,
+  "summary_format": "markdown",
+  "phase": "v0.9.0 - Automated Testing & Quality Gates",
+  "project_name": "SafeGraph AI VS Code Extension",
+  "git_repo": "https://github.com/safegraph-ai/safegraph-ai-vscode",
+  "team": "Safegraph AI",
+  "timezone": "Asia/Ho_Chi_Minh",
+  "language": "vi"
+}

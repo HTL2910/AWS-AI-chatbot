@@ -1,0 +1,8 @@
+# Ignore temp files
+*.tmp
+*.cache
+.DS_Store
+__pycache__/
+
+# But track all SUMMARY files
+!SUMMARY_*.md

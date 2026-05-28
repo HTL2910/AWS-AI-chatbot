@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aws-bedrock-chatbot"
-version = "1.0.0"
+version = "0.9.0"
 description = "A modern Chatbot application using Streamlit and Amazon Bedrock"
 readme = "README.md"
 requires-python = ">=3.8"

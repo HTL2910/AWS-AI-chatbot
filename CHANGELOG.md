@@ -1,5 +1,49 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.9.0] - 2024-01-XX
+
+### Added
+- **Phase 2: Automated Testing & Quality Gates**
+- TestGenerator: Autonomous unit/integration test generation
+- TestRunner: Test execution with coverage reporting
+- SecurityScanner: SAST, dependency check, CVE scanning
+- PerformanceProfiler: Benchmark and memory leak detection
+- E2ETestBuilder: End-to-end test generation
+- TestReporter: Comprehensive test reporting
+- LintEngine: ESLint, Prettier, TypeScript strict mode
+- ComplexityAnalyzer: Cyclomatic complexity detection
+- DocumentationChecker: JSDoc and README completeness validation
+- QualityGate: Aggregate quality checks
+- CodeSmellDetector: Code duplication and dead code detection
+- RefactoringEngine: Automated refactoring patterns
+- RefactoringValidator: Refactoring safety validation
+
+### Changed
+- Enhanced build pipeline with quality gates
+- Improved test coverage requirements
+- Stricter code quality standards
+
+### Fixed
+- Version alignment across Python and TypeScript projects
+
+## [0.8.3] - 2024-01-XX
+
+### Added
+- **Phase 1: Foundation Complete**
+- Tool API typed system
+- Task Planner engine
+- Mode system (Code, Web Research, Docs, Debug, UI Design, Review)
+- Strong context resolver
+- Apply engine with transaction/rollback
+- Approval/audit log
+- Test harness
+# Changelog
+
 Tất cả các thay đổi đáng chú ý của dự án này sẽ được ghi lại trong file này.
 
 Format dựa trên [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
