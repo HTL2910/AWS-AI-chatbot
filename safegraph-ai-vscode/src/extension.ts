@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat/ChatViewProvider";
 import { runInlineEdit, acceptInlineEdit, rejectInlineEdit } from "./inline/inlineEdit";
+import { HistoryManager } from "./history/HistoryManager";
+import { HistoryViewer } from "./history/HistoryViewer";
 
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel("Safegraph AI");
@@ -15,6 +17,13 @@ export function activate(context: vscode.ExtensionContext) {
     output.appendLine("[safegraph-ai] Version: unknown");
   }
 
+  // Initialize History Manager
+  const historyDir = vscode.Uri.joinPath(context.globalStorageUri, ".safegraph-history").fsPath;
+  const historyManager = new HistoryManager(historyDir);
+  const historyViewer = new HistoryViewer(historyManager);
+  
+  output.appendLine("[safegraph-ai] History Manager initialized");
+
   context.subscriptions.push(
     vscode.commands.registerCommand("safegraph.inlineAccept", () => acceptInlineEdit()),
     vscode.commands.registerCommand("safegraph.inlineReject", () => rejectInlineEdit())
@@ -22,6 +31,13 @@ export function activate(context: vscode.ExtensionContext) {
   
   output.appendLine("[safegraph-ai] Activate");
   context.subscriptions.push(output);
+
+  // Register history commands
+  context.subscriptions.push(
+    vscode.commands.registerCommand("safegraph.showHistory", () => {
+      historyViewer.showHistoryPanel();
+    })
+  );
 
   try {
     const provider = new ChatViewProvider(context, output);

@@ -1,12 +1,12 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.8.1",
+  "displayName": "Safegraph AI v0.8.3",
   "description": "MVP sidebar AI chat with local code-graph context and Bedrock integration.",
   "repository": {
     "type": "git",
     "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
   },
-  "version": "0.8.1",
+  "version": "0.8.3",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
@@ -22,7 +22,8 @@
     "onCommand:safegraph.checkBedrockApiKey",
     "onCommand:safegraph.openLog",
     "onCommand:safegraph.moveChatRight",
-    "onCommand:safegraph.inlineEdit"
+    "onCommand:safegraph.inlineEdit",
+    "onCommand:safegraph.showHistory"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -38,6 +39,10 @@
       {
         "command": "safegraph.openLog",
         "title": "Safegraph AI: Open Log"
+      },
+      {
+        "command": "safegraph.openAuditLog",
+        "title": "Safegraph AI: Open Audit Log"
       },
       {
         "command": "safegraph.moveChatRight",
@@ -58,6 +63,10 @@
       {
         "command": "safegraph.inlineReject",
         "title": "Safegraph AI: Reject Inline Edit"
+      },
+      {
+        "command": "safegraph.showHistory",
+        "title": "Safegraph AI: Show Task History"
       }
     ],
     "keybindings": [
