@@ -72,3 +72,10 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Node (ignore packages installed by npm/yarn/pnpm)
+node_modules/
+
+# Release artifacts
+releases/
+.session-history/

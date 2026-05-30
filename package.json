@@ -1,6 +1,6 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.11.0 - Staging & Production Deployment",
+  "displayName": "Safegraph AI v0.9.0 - Automated Testing & Quality Gates",
   "description": "MVP sidebar AI chat with local code-graph context and Bedrock integration.",
   "repository": {
     "type": "git",
@@ -167,8 +167,8 @@
     }
   },
   "scripts": {
-    "build:webview": "cd webview-ui && npm run build",
-    "build:ext": "tsc -p .",
+    "build:webview": "cd safegraph-ai-vscode/webview-ui && npm run build",
+    "build:ext": "tsc -p safegraph-ai-vscode",
     "test": "jest --coverage",
     "build": "npm run build:webview && npm run build:ext",
     "watch": "tsc -p . -w",
@@ -176,22 +176,23 @@
     "package": "npm run build && node scripts/package-vsix.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "axios": "^1.16.1",
     "eslint": "^8.57.0",
     "prettier": "^3.2.5",
     "typescript": "^5.5.4"
   },
   "devDependencies": {
+    "@types/axios": "^0.14.4",
     "@types/jest": "^29.5.12",
     "@types/node": "^20.12.12",
-    "@types/axios": "^0.14.0",
     "@types/vscode": "^1.90.0",
     "@typescript-eslint/eslint-plugin": "^7.10.0",
     "@typescript-eslint/parser": "^7.10.0",
     "jest": "^29.7.0",
     "ts-jest": "^29.1.2",
     "ts-node": "^10.9.2",
-    "typescript-eslint": "^7.10.0"
+    "typescript-eslint": "^7.10.0",
+    "vsce": "^2.15.0"
   }
 }

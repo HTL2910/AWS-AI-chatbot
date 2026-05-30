@@ -1,3 +1,51 @@
+// Diff Viewer Toggle Handler
+function initDiffViewerToggles() {
+  document.addEventListener('click', (e) => {
+    const toggle = e.target.closest('.diffToggle');
+    if (!toggle) return;
+
+    const targetId = toggle.getAttribute('data-target');
+    const content = document.getElementById(targetId);
+    if (!content) return;
+
+    const isExpanded = content.style.display !== 'none';
+    content.style.display = isExpanded ? 'none' : 'block';
+    toggle.setAttribute('aria-expanded', !isExpanded);
+
+    // Smooth scroll into view if expanding
+    if (!isExpanded) {
+      setTimeout(() => {
+        content.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 100);
+    }
+  });
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', () => {
+  initDiffViewerToggles();
+});
+
+// Also initialize when new content is added
+const originalAppendChild = Element.prototype.appendChild;
+Element.prototype.appendChild = function(child) {
+  const result = originalAppendChild.call(this, child);
+  if (child.classList && child.classList.contains('diffViewer')) {
+    initDiffViewerToggles();
+  }
+  return result;
+};
+
+// Parse and render enhanced diff
+function renderEnhancedDiff(diffText) {
+  // This will be called by the main rendering logic
+  // For now, return the HTML that will be inserted
+  const parser = new DiffParser();
+  const files = parser.parse(diffText);
+  const renderer = new DiffRenderer();
+  return renderer.renderHTML(files);
+}
+
 (function () {
   const vscode = acquireVsCodeApi();
 
