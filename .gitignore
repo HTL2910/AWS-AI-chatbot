@@ -1,3 +1,15 @@
+# Old folders (cleanup in progress - ignore these)
+.safegraph-venv/
+venv/
+releases/
+dist/
+
+# Old folders (cleanup in progress - ignore these)
+.safegraph-venv/
+venv/
+releases/
+dist/
+
 # Environment variables
 .env
 .env.local
