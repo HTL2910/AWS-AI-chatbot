@@ -1,12 +1,12 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.9.0 - Automated Testing & Quality Gates",
+  "displayName": "Safegraph AI v0.12.1",
   "description": "MVP sidebar AI chat with local code-graph context and Bedrock integration.",
   "repository": {
     "type": "git",
     "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
   },
-  "version": "0.11.0",
+  "version": "0.12.1",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
@@ -90,7 +90,7 @@
       }
     ],
     "configuration": {
-      "title": "Safegraph AI v0.9.0",
+      "title": "Safegraph AI v0.12.1",
       "properties": {
         "safegraph.autoRun": {
           "type": "string",
@@ -151,7 +151,7 @@
       "activitybar": [
         {
           "id": "safegraph",
-          "title": "Safegraph AI v0.9.0",
+          "title": "Safegraph AI v0.12.1",
           "icon": "media/icon.svg"
         }
       ]
@@ -168,12 +168,12 @@
   },
   "scripts": {
     "build:webview": "cd safegraph-ai-vscode/webview-ui && npm run build",
-    "build:ext": "tsc -p safegraph-ai-vscode",
-    "test": "jest --coverage",
-    "build": "npm run build:webview && npm run build:ext",
-    "watch": "tsc -p . -w",
+    "build:ext": "cd safegraph-ai-vscode && npm run build:ext",
+    "typecheck": "cd safegraph-ai-vscode && npm run typecheck",
+    "test": "cd safegraph-ai-vscode && npm run test:ci",
+    "build": "cd safegraph-ai-vscode && npm run build",
     "bump": "node scripts/bump-version.js",
-    "package": "npm run build && node scripts/package-vsix.js"
+    "package": "cd safegraph-ai-vscode && npm run package"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

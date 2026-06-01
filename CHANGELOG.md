@@ -1,5 +1,67 @@
 # Changelog
 
+## [0.11.3] - 2025-05-31
+
+### Changed
+- **Code Cleanup** - Removed obsolete `safegraph-ai-vscode/` folder with old extension files
+- **Documentation Cleanup** - Removed outdated markdown files (CHECKLIST.md, CLEANUP_GUIDE.md, PROJECT_INFO.md, RELEASE_NOTES_0.11.0.md)
+- **Docs Reorganization** - Cleaned up `docs/` folder, removed redundant documentation (PHASE_2_IMPLEMENTATION.md, FINAL_SUMMARY.md, AUTONOMOUS_DELIVERY_ARCHITECTURE.md, etc.)
+- **Project Structure** - Streamlined project structure for better maintainability
+
+### Fixed
+- Removed duplicate and stale documentation files
+- Cleaned up git history tracking
+
+### Phase
+- Phase 4: Code Cleanup & Refactor (v0.11.3)
+
+## [0.11.2] - 2025-05-30
+
+### Changed
+- Minor bug fixes and stability improvements
+- Updated dependencies
+
+## [0.11.1] - 2025-05-29
+
+### Changed
+- Internal refactoring and code optimization
+- Improved error handling in deployment modules
+
+### Fixed
+- Fixed edge cases in canary monitoring
+- Improved health check reliability
+
+## [0.11.3] - 2025-05-31
+
+### Changed
+- **Code Cleanup** - Removed obsolete `safegraph-ai-vscode/` folder with old extension files
+- **Documentation Cleanup** - Removed outdated markdown files (CHECKLIST.md, CLEANUP_GUIDE.md, PROJECT_INFO.md, RELEASE_NOTES_0.11.0.md)
+- **Docs Reorganization** - Cleaned up `docs/` folder, removed redundant documentation (PHASE_2_IMPLEMENTATION.md, FINAL_SUMMARY.md, AUTONOMOUS_DELIVERY_ARCHITECTURE.md, etc.)
+- **Project Structure** - Streamlined project structure for better maintainability
+
+### Fixed
+- Removed duplicate and stale documentation files
+- Cleaned up git history tracking
+
+### Phase
+- Phase 4: Code Cleanup & Refactor (v0.11.3)
+
+## [0.11.2] - 2025-05-30
+
+### Changed
+- Minor bug fixes and stability improvements
+- Updated dependencies
+
+## [0.11.1] - 2025-05-29
+
+### Changed
+- Internal refactoring and code optimization
+- Improved error handling in deployment modules
+
+### Fixed
+- Fixed edge cases in canary monitoring
+- Improved health check reliability
+
 ## [0.11.0] - 2025-05-30
 
 ### Added

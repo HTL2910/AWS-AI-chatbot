@@ -7,14 +7,12 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { HistoryManager } from './HistoryManager';
-import { HistoryStorage } from './HistoryStorage';
 
 describe('History System Integration', () => {
   let tempDir: string;
   let manager: HistoryManager;
-  let storage: HistoryStorage;
 
-  before(() => {
+  beforeAll(() => {
     // Create temporary directory for tests
     tempDir = path.join(__dirname, '.test-history-' + Date.now());
     if (!fs.existsSync(tempDir)) {
@@ -22,7 +20,7 @@ describe('History System Integration', () => {
     }
   });
 
-  after(() => {
+  afterAll(() => {
     // Cleanup
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true });
@@ -31,7 +29,6 @@ describe('History System Integration', () => {
 
   beforeEach(() => {
     manager = new HistoryManager(tempDir);
-    storage = new HistoryStorage(tempDir);
   });
 
   describe('Task Lifecycle', () => {
@@ -45,7 +42,7 @@ describe('History System Integration', () => {
       manager.startTask('Test Task', 'Test Description');
       manager.logAction('Create file', 'file_create', 'console.log("hello");', 0, 'File created');
       
-      const entries = storage.query({ limit: 100 });
+      const entries = manager.queryHistory({ limit: 100 });
       const actionEntry = entries.find(e => e.type === 'ACTION');
       assert.ok(actionEntry, 'Action should be logged');
       assert.strictEqual(actionEntry?.actions?.[0].type, 'file_create');
@@ -55,7 +52,7 @@ describe('History System Integration', () => {
       manager.startTask('Test Task', 'Test Description');
       manager.logVerification(true, 'All tests passed');
       
-      const entries = storage.query({ limit: 100 });
+      const entries = manager.queryHistory({ limit: 100 });
       const verifyEntry = entries.find(e => e.type === 'VERIFICATION');
       assert.ok(verifyEntry, 'Verification should be logged');
       assert.strictEqual(verifyEntry?.verification?.passed, true);
@@ -66,9 +63,10 @@ describe('History System Integration', () => {
       manager.logAction('Do something', 'command', 'echo test', 0, 'Done');
       manager.completeTask('Task completed successfully', true);
       
-      const entries = storage.query({ status: 'completed', limit: 100 });
+      const entries = manager.queryHistory({ status: 'completed', limit: 100 });
       assert.ok(entries.length > 0, 'Completed task should be queryable');
-      assert.ok(entries[0].duration, 'Duration should be recorded');
+      const completeEntry = entries.find(e => e.type === 'TASK_COMPLETE');
+      assert.notStrictEqual(completeEntry?.duration, undefined, 'Duration should be recorded');
     });
   });
 

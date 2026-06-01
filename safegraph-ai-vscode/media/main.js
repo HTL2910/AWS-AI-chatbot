@@ -265,6 +265,12 @@ function renderEnhancedDiff(diffText) {
     return lineCount >= 3 && codeSignals.some((re) => re.test(s)) && proseWords.length < 4;
   }
 
+  function looksLikePrototypeRequest(text) {
+    const s = String(text || "").toLowerCase();
+    return /\b(mockup|prototype|wireframe|dashboard|landing|website|web app|app screen|ui|ux|design|sample data|demo data|mvp)\b/i.test(s) ||
+      /(giao diện|mẫu|mockup|thiết kế|dữ liệu mẫu|app|dashboard|trang web|website|màn hình)/i.test(s);
+  }
+
   function normalizeUserIntentForAgent(text) {
     const original = String(text || "").trim();
     if (!original || hasExplicitUserRequest(original)) return original;
@@ -287,6 +293,18 @@ function renderEnhancedDiff(diffText) {
         "If no file path is obvious, use the active file and workspace context.",
         "",
         "Pasted content:",
+        original
+      ].join("\n");
+    }
+
+    if (looksLikePrototypeRequest(original)) {
+      return [
+        "User described a UI/product mockup request.",
+        "Infer the missing details and create or update a runnable mockup with realistic sample data. Do not ask for more details unless the request is unsafe or destructive.",
+        "Prefer the tagged file if present. If no app structure is obvious, create a standalone HTML mockup that can be opened directly in a browser.",
+        "This is an early prototype: prioritize an inspectable visual result over production completeness.",
+        "",
+        "User request:",
         original
       ].join("\n");
     }
@@ -636,6 +654,170 @@ function renderEnhancedDiff(diffText) {
     container.appendChild(footer);
   }
 
+  function renderAutoAppliedChangeSet(msg) {
+    const container = document.createElement("div");
+    container.className = "liveChangePanel";
+    container.dataset.changeSetId = msg.id || "";
+
+    const header = document.createElement("div");
+    header.className = "liveChangeHeader";
+
+    const badge = document.createElement("div");
+    badge.className = "liveChangeBadge";
+    badge.textContent = "Live";
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "liveChangeTitleWrap";
+
+    const title = document.createElement("div");
+    title.className = "liveChangeTitle";
+    title.textContent = "Changes applied to workspace";
+
+    const status = document.createElement("div");
+    status.className = "liveChangeStatus";
+    status.textContent = msg.summary || "Review the applied files, then keep or discard all changes.";
+
+    titleWrap.append(title, status);
+    header.append(badge, titleWrap);
+
+    const body = document.createElement("div");
+    body.className = "liveChangeBody";
+
+    const summaries = summarizeUnifiedDiff(msg.diff || "");
+    const stats = document.createElement("div");
+    stats.className = "liveChangeStats";
+    const totals = summaries.reduce(
+      (acc, item) => {
+        acc.added += item.added;
+        acc.removed += item.removed;
+        return acc;
+      },
+      { added: 0, removed: 0 }
+    );
+    [
+      `${summaries.length} file${summaries.length === 1 ? "" : "s"}`,
+      `+${totals.added}`,
+      `-${totals.removed}`
+    ].forEach((text, index) => {
+      const pill = document.createElement("span");
+      pill.className = index === 1 ? "statAdd" : index === 2 ? "statRemove" : "";
+      pill.textContent = text;
+      stats.appendChild(pill);
+    });
+    body.appendChild(stats);
+
+    const fileList = document.createElement("div");
+    fileList.className = "liveFileList";
+    summaries.slice(0, 8).forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "liveFileRow";
+
+      const name = document.createElement("div");
+      name.className = "liveFileName";
+      name.textContent = item.label;
+
+      const meta = document.createElement("div");
+      meta.className = "liveFileMeta";
+      const action = item.isNew ? "Created" : item.isDeleted ? "Deleted" : "Updated";
+      meta.textContent = `${action}  +${item.added} / -${item.removed}`;
+
+      row.append(name, meta);
+      fileList.appendChild(row);
+    });
+    if (summaries.length > 8) {
+      const more = document.createElement("div");
+      more.className = "liveFileMore";
+      more.textContent = `+${summaries.length - 8} more file${summaries.length - 8 === 1 ? "" : "s"}`;
+      fileList.appendChild(more);
+    }
+    body.appendChild(fileList);
+
+    const details = document.createElement("details");
+    details.className = "liveDiffDetails";
+    const summary = document.createElement("summary");
+    summary.textContent = "Review diff";
+    details.appendChild(summary);
+
+    const diffBody = document.createElement("div");
+    diffBody.className = "liveDiffBody";
+    for (const fileDiff of splitUnifiedDiffByFile(msg.diff || "")) {
+      const item = document.createElement("div");
+      item.className = "diffItem liveDiffItem";
+
+      const top = document.createElement("div");
+      top.className = "diffItemTop";
+      const label = document.createElement("div");
+      label.className = "diffFile";
+      label.textContent = extractFileLabel(fileDiff);
+      top.appendChild(label);
+
+      const pre = document.createElement("pre");
+      pre.className = "diff";
+      pre.textContent = fileDiff;
+
+      item.append(top, pre);
+      diffBody.appendChild(item);
+    }
+    details.appendChild(diffBody);
+    body.appendChild(details);
+
+    const footer = document.createElement("div");
+    footer.className = "diffFooter";
+
+    const discardAll = document.createElement("button");
+    discardAll.type = "button";
+    discardAll.className = "discardBtn";
+    discardAll.textContent = "Discard All";
+    discardAll.addEventListener("click", () => {
+      setLiveChangeBusy(container, "Discarding...");
+      vscode.postMessage({ type: "discardChangeSet", id: msg.id });
+    });
+
+    const keep = document.createElement("button");
+    keep.type = "button";
+    keep.className = "applyBtn";
+    keep.textContent = "Apply All";
+    keep.addEventListener("click", () => {
+      setLiveChangeBusy(container, "Keeping applied changes...");
+      vscode.postMessage({ type: "keepChangeSet", id: msg.id });
+    });
+
+    footer.append(discardAll, keep);
+    container.append(header, body, footer);
+    messagesEl.appendChild(container);
+    updateEmptyState();
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function setLiveChangeBusy(container, label) {
+    container.querySelectorAll("button").forEach((button) => {
+      button.disabled = true;
+    });
+    const status = container.querySelector(".liveChangeStatus");
+    if (status) status.textContent = label;
+  }
+
+  function updateLiveChangePanel(msg) {
+    const container = Array.from(messagesEl.querySelectorAll(".liveChangePanel")).find(
+      (item) => item.dataset.changeSetId === (msg.id || "")
+    );
+    if (!container) return;
+    const status = container.querySelector(".liveChangeStatus");
+    if (status) status.textContent = msg.message || msg.status || "";
+    container.dataset.status = msg.status || "";
+
+    if (msg.status === "error") {
+      container.querySelectorAll("button").forEach((button) => {
+        button.disabled = false;
+      });
+      return;
+    }
+
+    container.querySelectorAll("button").forEach((button) => {
+      button.disabled = true;
+    });
+  }
+
   function setAssistantText(id, text, done) {
     let el = assistantById.get(id);
     if (!el) {
@@ -820,6 +1002,8 @@ function renderEnhancedDiff(diffText) {
     if (msg.type === "fileSuggestions") renderSuggestions(msg.items || []);
     if (msg.type === "commandProposed") renderCommandPanel(msg.items || []);
     if (msg.type === "commandUpdate") updateCommand(msg);
+    if (msg.type === "autoAppliedChangeSet") renderAutoAppliedChangeSet(msg);
+    if (msg.type === "changeSetUpdate") updateLiveChangePanel(msg);
   });
 
   attachFileEl.addEventListener("click", (e) => {
@@ -877,6 +1061,7 @@ function renderEnhancedDiff(diffText) {
     setAssistantText(id, "Preparing request...", false);
     setStatus("Preparing", "busy");
     inputEl.focus();
+    const inferredPrototype = looksLikePrototypeRequest(cleanText);
     const agentText = normalizeUserIntentForAgent(cleanText);
 
     const payload = {
@@ -884,7 +1069,7 @@ function renderEnhancedDiff(diffText) {
       id,
       text: agentText,
       ts: Date.now(),
-      agentMode,
+      agentMode: inferredPrototype ? true : agentMode,
       taggedFiles: Array.from(taggedFiles.keys()),
       attachments: Array.from(attachments.values()).map((a) => ({ name: a.name, text: a.text })),
       ...(overrides || {})
@@ -917,7 +1102,7 @@ function renderEnhancedDiff(diffText) {
     designMockupEl.addEventListener("click", (e) => {
       e.preventDefault();
       sendPrompt(
-        "Analyze the current project and user-facing workflow, then design and implement a polished mockup or UI improvement. Infer missing product requirements, create/edit the necessary UI files, include responsive states, realistic sample data, and provide safe run/verification commands.",
+        "Create an inspectable UI mockup now. Infer the product requirements from the current project, tagged files, screenshots, and user context. Use realistic sample data and enough interaction/states to judge the workflow. Prefer editing the tagged file or existing app entry; if no app structure is obvious, create a standalone HTML mockup that opens directly in a browser. Prioritize a runnable prototype over production completeness.",
         { agentMode: true }
       );
     });

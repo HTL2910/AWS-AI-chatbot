@@ -418,6 +418,176 @@ body {
   background: rgba(15, 23, 42, 0.6);
 }
 
+.liveChangePanel {
+  margin: 4px 0 10px;
+  border: 1px solid rgba(88, 166, 255, 0.34);
+  border-radius: 6px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(10, 15, 24, 0.96));
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+}
+
+.liveChangePanel[data-status="kept"] {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(10, 34, 22, 0.72);
+}
+
+.liveChangePanel[data-status="discarded"] {
+  border-color: rgba(148, 163, 184, 0.3);
+  background: rgba(30, 41, 59, 0.68);
+}
+
+.liveChangePanel[data-status="error"] {
+  border-color: rgba(248, 81, 73, 0.42);
+  background: rgba(69, 10, 10, 0.42);
+}
+
+.liveChangeHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.liveChangeBadge {
+  border: 1px solid rgba(88, 166, 255, 0.45);
+  background: rgba(88, 166, 255, 0.14);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 16px;
+  text-transform: uppercase;
+}
+
+.liveChangeTitleWrap {
+  min-width: 0;
+  flex: 1;
+}
+
+.liveChangeTitle {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.liveChangeStatus {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.liveChangeBody {
+  padding: 12px 14px;
+}
+
+.liveChangeStats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.liveChangeStats span {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.liveChangeStats .statAdd {
+  border-color: rgba(34, 197, 94, 0.28);
+  color: #86efac;
+}
+
+.liveChangeStats .statRemove {
+  border-color: rgba(239, 68, 68, 0.28);
+  color: #fca5a5;
+}
+
+.liveFileList {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(2, 6, 23, 0.36);
+}
+
+.liveFileRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.liveFileRow:last-child {
+  border-bottom: 0;
+}
+
+.liveFileName {
+  min-width: 0;
+  flex: 1;
+  color: var(--text);
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.liveFileMeta,
+.liveFileMore {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.liveFileMore {
+  padding: 8px 10px;
+}
+
+.liveDiffDetails {
+  margin-top: 10px;
+}
+
+.liveDiffDetails summary {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
+}
+
+.liveDiffDetails summary:hover {
+  color: var(--text);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.liveDiffBody {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.liveDiffItem .diff {
+  max-height: 220px;
+}
+
 .diffSection {
   border-bottom: 1px solid rgba(148, 163, 184, 0.1);
 }
@@ -548,8 +718,9 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 10px 14px;
   border-top: 1px solid var(--border);
+  background: rgba(2, 6, 23, 0.26);
 }
 
 .diffFile {
@@ -564,15 +735,22 @@ body {
 .applyBtn {
   text-align: left;
   border: 1px solid rgba(34, 197, 94, 0.35);
-  background: rgba(34, 197, 94, 0.14);
+  background: rgba(34, 197, 94, 0.16);
   color: var(--text);
-  padding: 6px 10px;
+  padding: 7px 12px;
   cursor: pointer;
   border-radius: 6px;
+  font-weight: 700;
 }
 
 .applyBtn:hover {
   background: rgba(34, 197, 94, 0.2);
+}
+
+.applyBtn:disabled,
+.discardBtn:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .discardBtn {
@@ -580,9 +758,10 @@ body {
   border: 1px solid rgba(148, 163, 184, 0.35);
   background: rgba(148, 163, 184, 0.1);
   color: var(--text);
-  padding: 6px 10px;
+  padding: 7px 12px;
   cursor: pointer;
   border-radius: 6px;
+  font-weight: 700;
 }
 
 .discardBtn:hover {

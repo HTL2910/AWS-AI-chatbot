@@ -1,12 +1,12 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.11.0 - Staging & Production Deployment",
+  "displayName": "Safegraph AI v0.12.1",
   "description": "MVP sidebar AI chat with local code-graph context and Bedrock integration.",
   "repository": {
     "type": "git",
     "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
   },
-  "version": "0.11.0",
+  "version": "0.12.1",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
@@ -90,7 +90,7 @@
       }
     ],
     "configuration": {
-      "title": "Safegraph AI v0.9.0",
+      "title": "Safegraph AI v0.12.1",
       "properties": {
         "safegraph.autoRun": {
           "type": "string",
@@ -151,7 +151,7 @@
       "activitybar": [
         {
           "id": "safegraph",
-          "title": "Safegraph AI v0.9.0",
+          "title": "Safegraph AI v0.12.1",
           "icon": "media/icon.svg"
         }
       ]
@@ -169,23 +169,25 @@
   "scripts": {
     "build:webview": "cd webview-ui && npm run build",
     "build:ext": "tsc -p .",
-    "test": "jest --coverage",
+    "typecheck": "tsc -p . --noEmit",
+    "test": "jest --watchman=false --coverage",
+    "test:ci": "jest --watchman=false --runInBand --coverage",
     "build": "npm run build:webview && npm run build:ext",
     "watch": "tsc -p . -w",
     "bump": "node scripts/bump-version.js",
     "package": "npm run build && node scripts/package-vsix.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "axios": "^1.6.0",
     "eslint": "^8.57.0",
     "prettier": "^3.2.5",
     "typescript": "^5.5.4"
   },
   "devDependencies": {
+    "@types/axios": "^0.14.0",
     "@types/jest": "^29.5.12",
     "@types/node": "^20.12.12",
-    "@types/axios": "^0.14.0",
     "@types/vscode": "^1.90.0",
     "@typescript-eslint/eslint-plugin": "^7.10.0",
     "@typescript-eslint/parser": "^7.10.0",

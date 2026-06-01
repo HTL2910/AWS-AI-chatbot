@@ -1,15 +1,3 @@
-# Old folders (cleanup in progress - ignore these)
-.safegraph-venv/
-venv/
-releases/
-dist/
-
-# Old folders (cleanup in progress - ignore these)
-.safegraph-venv/
-venv/
-releases/
-dist/
-
 # Environment variables
 .env
 .env.local
@@ -87,7 +75,14 @@ Thumbs.db
 
 # Node (ignore packages installed by npm/yarn/pnpm)
 node_modules/
+safegraph-ai-vscode/node_modules/
+safegraph-ai-vscode/webview-ui/node_modules/
+safegraph-ai-vscode/out/
+safegraph-ai-vscode/coverage/
+safegraph-ai-vscode/webview-ui/dist/
+coverage/
 
 # Release artifacts
 releases/
+*.vsix
 .session-history/

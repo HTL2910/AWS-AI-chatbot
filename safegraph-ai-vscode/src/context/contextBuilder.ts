@@ -106,6 +106,60 @@ function detectFramework(files: vscode.Uri[]): string[] {
   return hints;
 }
 
+async function readRootFile(root: vscode.Uri | undefined, name: string, maxChars: number) {
+  if (!root) return "";
+  try {
+    const uri = vscode.Uri.joinPath(root, name);
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    const text = Buffer.from(bytes).toString("utf8");
+    return text.length > maxChars ? text.slice(0, maxChars) + "\n[...truncated...]" : text;
+  } catch {
+    return "";
+  }
+}
+
+async function getProjectManifestSnapshot(targetRoot?: vscode.Uri) {
+  const root = targetRoot ?? vscode.workspace.workspaceFolders?.[0]?.uri;
+  if (!root) return "";
+
+  const manifestNames = [
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "Cargo.toml",
+    "go.mod",
+    "pom.xml",
+    "README.md"
+  ];
+  const parts: string[] = [];
+
+  for (const name of manifestNames) {
+    const text = await readRootFile(root, name, name === "README.md" ? 5000 : 8000);
+    if (text.trim()) {
+      parts.push(`--- ${name} ---\n${text}`);
+    }
+  }
+
+  return parts.length ? parts.join("\n\n") : "";
+}
+
+function getOpenEditorSnapshot() {
+  const docs = vscode.workspace.textDocuments
+    .filter((doc) => !doc.isUntitled && doc.uri.scheme === "file")
+    .filter((doc) => !/(^|\/)(node_modules|\.git|dist|build|out|venv|\.venv)(\/|$)/.test(doc.uri.fsPath))
+    .slice(0, 12);
+
+  if (!docs.length) return "";
+
+  return docs
+    .map((doc) => {
+      const rel = vscode.workspace.asRelativePath(doc.uri, false);
+      const dirty = doc.isDirty ? "dirty" : "saved";
+      return `- ${rel} (${doc.languageId}, ${doc.lineCount} lines, ${dirty})`;
+    })
+    .join("\n");
+}
+
 export async function buildContext(options: ContextBuildOptions = {}) {
   const maxChars = options.maxChars ?? 8000;
   const maxFiles = options.maxFiles ?? 80;
@@ -118,6 +172,11 @@ export async function buildContext(options: ContextBuildOptions = {}) {
   const folders = vscode.workspace.workspaceFolders ?? [];
   priorityParts.push(`Workspace folders: ${folders.map((f) => f.uri.fsPath).join(" | ") || "(none)"}`);
   priorityParts.push(`Target root for this task: ${targetRoot?.fsPath || folders[0]?.uri.fsPath || "(none)"}`);
+
+  const openEditors = getOpenEditorSnapshot();
+  if (openEditors) {
+    pushSection(priorityParts, "Open editor files", openEditors, 3000);
+  }
 
   const editor = vscode.window.activeTextEditor;
   if (editor) {
@@ -184,6 +243,9 @@ export async function buildContext(options: ContextBuildOptions = {}) {
 
   const diags = await getDiagnostics();
   if (diags) backgroundParts.push(diags);
+
+  const manifests = await getProjectManifestSnapshot(targetRoot);
+  if (manifests) backgroundParts.push(`Project manifest snapshot:\n${manifests}`);
 
   const cfg = vscode.workspace.getConfiguration("safegraph");
   const repositoryEnabled = Boolean(cfg.get("repositoryRag.enabled", true));

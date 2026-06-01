@@ -4,7 +4,7 @@ import * as path from "path";
 import * as http from "http";
 import * as https from "https";
 import { getChatWebviewHtml } from "./webviewHtml";
-import { bedrockConverse } from "../bedrock/bedrockClient";
+import { bedrockConverse, bedrockConverseStream } from "../bedrock/bedrockClient";
 import { buildContext } from "../context/contextBuilder";
 import { maskSensitive } from "../security/mask";
 import { loadBedrockApiKeyFromDotEnv, loadBedrockApiKeyInfos, maskApiKey } from "../config/env";
@@ -12,6 +12,16 @@ import { applyUnifiedDiffToWorkspaceSmart, parseUnifiedDiff, preflightUnifiedDif
 import { McpClientManager } from "../mcp/McpClient";
 import { CommandRunner, CommandRunResult, CommandUpdateMessage } from "../terminal/commandRunner";
 import { AutoRunMode } from "../terminal/commandPolicy";
+import { extractDiffBlocks, formatApplyError, shellQuote, stripDiffBlocksForLiveApply } from "./diffText";
+import {
+  extractPageTitle,
+  extractRelatedLinks,
+  extractUrls,
+  htmlToReadableText,
+  inferredDocsSiblingLinks,
+  sameDocsSection,
+  uniqueLinks
+} from "./docsText";
 
 type WebviewToExtensionMessage =
   | {
@@ -34,6 +44,8 @@ type WebviewToExtensionMessage =
   | { type: "addSelection" }
   | { type: "droppedUris"; uris: string[] }
   | { type: "applyDiff"; diff: string }
+  | { type: "discardChangeSet"; id: string }
+  | { type: "keepChangeSet"; id: string }
   | { type: "stop" }
   | { type: "suggestFiles"; query: string }
   | { type: "runCommand"; id: string; cmd: string }
@@ -42,155 +54,238 @@ type WebviewToExtensionMessage =
 type ExtensionToWebviewMessage =
   | { type: "assistantMessage"; id: string; text: string; ts: number; done?: boolean }
   | { type: "error"; message: string; ts: number }
+  | { type: "autoAppliedChangeSet"; id: string; diff: string; summary: string; ts: number }
+  | { type: "changeSetUpdate"; id: string; status: "kept" | "discarded" | "error"; message?: string; ts: number }
   | { type: "contextItem"; kind: "file"; path: string; label: string; ts: number }
   | { type: "contextItem"; kind: "attachment"; name: string; text: string; ts: number }
   | { type: "fileSuggestions"; items: { path: string; label: string }[]; ts: number }
   | CommandUpdateMessage;
 
-function formatApplyError(e: unknown) {
-  const raw = String(e instanceof Error ? e.message : e);
-  const normalized = raw.replace(/^Error:\s*/i, "").trim();
+type FileSnapshot = {
+  path: string;
+  existed: boolean;
+  content?: Uint8Array;
+};
 
-  if (/corrupt patch/i.test(normalized)) {
-    return [
-      `Safegraph AI: Apply failed: ${normalized}`,
-      "Reason: the diff was not a valid unified patch. This can happen when multiple file diffs are split incorrectly, or when model text is mixed into the patch.",
-      "Fix: use Apply All on the combined diff, or ask Safegraph AI to regenerate the patch as a clean ```diff block."
-    ].join("\n");
+type AppliedChangeSet = {
+  id: string;
+  diff: string;
+  snapshots: FileSnapshot[];
+  createdAt: number;
+};
+
+function buildSafegraphSystemPrompt(targetRoot: string) {
+  return `You are Safegraph AI, a pragmatic senior software engineer embedded in VS Code.
+
+Your first job is to understand the user's real intent from their latest message, active file, selected text, tagged files, diagnostics, git state, and recent conversation. The latest user request wins over older chat history.
+
+Expert coding contract:
+- Before coding, infer the project stack from manifests, imports, file names, existing components, scripts, and diagnostics. Match the repo's current architecture instead of introducing a new one.
+- Keep edits focused. Do not rewrite unrelated files, rename public APIs, or change formatting broadly unless the request requires it.
+- Produce complete, runnable code. No pseudocode, missing imports, TODO-only implementations, placeholder handlers, fake data where real project data is available, or half-finished branches.
+- Preserve language conventions: semantic HTML, accessible labels, responsive CSS, typed TypeScript, idiomatic Python, correct async/error handling, and framework-native patterns.
+- Handle edge cases that matter: empty states, loading/error states, invalid input, null/undefined, failed network/API calls, path ambiguity, and repeated user actions.
+- Prefer simple maintainable code over clever abstractions. Add an abstraction only when it reduces real duplication or complexity in the current codebase.
+- Security and privacy are non-negotiable: never hardcode secrets, never log credentials, validate untrusted input, avoid unsafe shell commands, and call out risky actions.
+- For code style, preserve existing naming, indentation, module boundaries, lint style, and dependency choices. If no formatter is obvious, use conventional formatting for the language.
+- For tests/verification, choose the smallest command that proves the change. If tests cannot be run, state the exact reason and provide the safest next verification step.
+- After changing code, expect the host to run an automatic verification command. If that command fails, repair the failure before claiming completion.
+- For dependency changes, justify why the dependency is needed and prefer existing dependencies already in the repo.
+
+Frontend/UI rules:
+- Build the actual usable interface, not a landing-page explanation, unless explicitly asked for marketing content.
+- Use existing design system/components first. Keep layouts responsive, accessible, and free of overlapping text.
+- Use realistic labels/data and include hover/focus/disabled/loading/error/empty states when relevant.
+- For early mockup/prototype requests, favor a fast inspectable prototype over production completeness: create or update a single runnable HTML/CSS/JS/React screen with realistic sample data, visible states, and enough interaction to judge the concept.
+- If the user provides only a product idea or description, infer the missing details and build a sample-data mockup. Do not ask for exact copy, real backend data, brand assets, or final requirements unless the request would be unsafe or destructive.
+- Avoid generic one-color themes, decorative filler, and visible instructional text that explains the UI instead of making it intuitive.
+- When creating or editing mock data, JSON, config, or files fetched by frontend code, validate the exact file with a real parser before declaring done. JSON must have exactly one top-level value, no comments, no trailing text, no trailing commas, and valid UTF-8.
+- When frontend code fetches static assets or data, verify the paths match the server/public directory layout. Handle missing data with a visible error state and avoid unhandled promise rejections.
+- For browser-facing changes, include a check that would catch console errors and failed network requests when practical: app build, dev server smoke test, Playwright/browser check, or a focused curl/node parser check.
+- Treat favicon/static 404s as real polish bugs when the user reports them: add the asset, update the link, or remove the broken reference.
+- For generated HTML/CSS UI, edit the actual project files and return a unified diff. Do not paste a whole standalone page into chat unless explicitly asked. Keep CSS inside a real stylesheet, a valid <style> element in <head>, or framework-native style modules; never leave raw CSS declarations as body text.
+
+Backend/API rules:
+- Keep request/response contracts explicit, validate inputs, return useful errors, and avoid swallowing exceptions.
+- Preserve backward compatibility unless the user explicitly asks for a breaking change.
+- Do not fake successful integration. If an external service is required, wire the real call path or clearly state the missing credential/environment requirement.
+
+Chat behavior:
+- If the user asks to fix/build/update/code, act directly. Do not stop at advice when a diff or command can solve the task.
+- Ask at most one question only when the missing detail is high-risk, security-sensitive, destructive, costly, or changes product direction. Otherwise make a conservative assumption and continue.
+- If the user writes Vietnamese, answer in clear Vietnamese.
+
+Skill playbooks:
+- Diagnose: for bugs, failures, regressions, errors, or "it does not work". Build a feedback loop first, reproduce the user's exact symptom, form ranked falsifiable hypotheses, instrument narrowly, fix, add or update a regression check when there is a correct seam, rerun the original repro, then clean up temporary probes.
+- TDD: for new behavior or bug fixes where tests are available. Work in vertical slices: one behavior test through a public interface, make it fail, implement just enough, make it pass, repeat. Test behavior, not private implementation details. Refactor only after green.
+- Grill with docs: for unclear product/design/domain requests. Explore the code and docs first. Use CONTEXT.md and docs/adr when present. Ask one precise question at a time only when code/docs cannot answer it. Resolve vocabulary into canonical domain terms and call out contradictions between user language, docs, and code.
+- Architecture review: for refactor/architecture/testability requests. Look for shallow modules, missing seams, poor locality, excessive caller knowledge, hard-to-test flows, and pass-through abstractions. Prefer deep modules: small stable interfaces hiding useful implementation. Use the deletion test before proposing a module change.
+- Prototype: for uncertain UI/product/logic design. Build a small runnable throwaway or inspectable implementation that exercises the real workflow and exposes tradeoffs quickly.
+
+Autonomous task protocol:
+- You can provide unified diffs in \`\`\`diff blocks and safe terminal commands in \`\`\`sh blocks. The host may apply/run them and return results.
+- Always start with a short Plan when changes or commands are needed.
+- Always explain Actions briefly before a diff/command.
+- After execution results, verify what passed or failed and repair if needed.
+- End with [DONE] only when the user's goal is handled and verification is complete or the remaining risk is clearly stated. Never use [DONE] immediately after a code diff unless you also included or received a passing verification result.
+- End with [CONTINUE] only when you need execution results before proceeding.
+
+Patch rules:
+- Diff paths must be relative to target root: ${targetRoot || "(none)"}.
+- For new files use "--- /dev/null" and "+++ b/<path>".
+- For deleted files use "--- a/<path>" and "+++ /dev/null".
+- Never output a bare diff without a short summary.
+- Keep changes tightly scoped to the user's request.`;
+}
+
+function inferRequestType(text: string) {
+  const normalized = text.toLowerCase();
+  if (/(diagnose|debug|reproduce|perf|performance|regression|fix|bug|error|traceback|lỗi|sửa|không chạy|failed|exception|diagnostic)/i.test(normalized)) {
+    return "bugfix/debug";
   }
-
-  if (/Context mismatch|Delete line mismatch|Hunk out of range|patch does not apply|does not match/i.test(normalized)) {
-    return [
-      `Safegraph AI: Apply failed: ${normalized}`,
-      "Reason: the target file changed or the patch context no longer matches your workspace.",
-      "Fix: ask Safegraph AI to regenerate the diff from the current file contents."
-    ].join("\n");
+  if (/(unexpected non-whitespace|favicon|404|console error|browser console|load resource)/i.test(normalized)) {
+    return "frontend-data/static-asset-debug";
   }
-
-  return `Safegraph AI: Apply failed: ${normalized}`;
-}
-
-function extractDiffBlocks(text: string) {
-  const diffs: string[] = [];
-  const re = /```diff\s*([\s\S]*?)```/gi;
-  for (const m of String(text || "").matchAll(re)) {
-    const diff = String(m[1] || "").trim();
-    if (diff) diffs.push(diff);
+  if (/(tdd|test.?first|red.?green|regression test|integration test|unit test|kiểm thử|test)/i.test(normalized)) {
+    return "tdd/test-first";
   }
-  return diffs;
-}
-
-function extractUrls(text: string) {
-  const urls: string[] = [];
-  const seen = new Set<string>();
-  const re = /https?:\/\/[^\s<>"'`)\]]+/gi;
-  for (const match of String(text || "").matchAll(re)) {
-    const cleaned = match[0].replace(/[.,;:!?]+$/g, "");
-    if (!seen.has(cleaned)) {
-      seen.add(cleaned);
-      urls.push(cleaned);
-    }
+  if (/(architecture|kiến trúc|refactor|deep module|seam|adapter|coupling|testability|maintainability|codebase|module)/i.test(normalized)) {
+    return "architecture/refactor";
   }
-  return urls;
-}
-
-function sameDocsSection(seed: URL, candidate: URL) {
-  if (seed.origin !== candidate.origin) return false;
-  const seedParts = seed.pathname.split("/").filter(Boolean);
-  const candidateParts = candidate.pathname.split("/").filter(Boolean);
-  const docsIndex = seedParts.indexOf("docs");
-  if (docsIndex < 0) return candidate.pathname.startsWith(path.posix.dirname(seed.pathname));
-  const prefix = seedParts.slice(0, Math.min(seedParts.length, docsIndex + 3)).join("/");
-  return candidateParts.join("/").startsWith(prefix);
-}
-
-function decodeHtmlEntities(text: string) {
-  return text
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-}
-
-function htmlToReadableText(html: string) {
-  const withoutScripts = html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<nav[\s\S]*?<\/nav>/gi, " ");
-  return decodeHtmlEntities(
-    withoutScripts
-      .replace(/<\/(h1|h2|h3|h4|p|li|tr|pre|code|section|article|main)>/gi, "\n")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/[ \t]+/g, " ")
-      .replace(/\n\s+/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim()
-  );
-}
-
-function extractPageTitle(html: string) {
-  const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
-  const title = h1 || html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "";
-  return htmlToReadableText(title).replace(/\s+/g, " ").trim();
-}
-
-function extractRelatedLinks(html: string, seedUrl: string) {
-  const seed = new URL(seedUrl);
-  const links: { url: string; label: string }[] = [];
-  const seen = new Set<string>();
-  const re = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-  for (const match of html.matchAll(re)) {
-    try {
-      const url = new URL(match[1], seed);
-      url.hash = "";
-      if (!/^https?:$/.test(url.protocol)) continue;
-      if (!sameDocsSection(seed, url)) continue;
-      const normalized = url.toString().replace(/\/$/, "");
-      if (seen.has(normalized)) continue;
-      seen.add(normalized);
-      links.push({ url: normalized, label: htmlToReadableText(match[2]).replace(/\s+/g, " ").slice(0, 120) });
-    } catch {
-      // Ignore malformed anchors.
-    }
+  if (/(clarify|grill|spec|prd|domain|glossary|adr|context\.md|requirement|yêu cầu|ngữ cảnh)/i.test(normalized)) {
+    return "domain-clarification";
   }
-  return links;
-}
-
-function inferredDocsSiblingLinks(seedUrl: string) {
-  const seed = new URL(seedUrl);
-  const normalizedPath = seed.pathname.replace(/\/$/, "");
-  const parts = normalizedPath.split("/").filter(Boolean);
-  if (parts.length < 2) return [];
-
-  const currentSlug = parts[parts.length - 1];
-  const baseParts = currentSlug === "overview" ? parts.slice(0, -1) : parts;
-  const basePath = "/" + baseParts.join("/");
-  const candidates = [
-    "overview",
-    "navigation",
-    "modes-and-skills",
-    "security-and-governance",
-    "best-practices"
-  ];
-
-  return candidates.map((slug) => ({
-    url: `${seed.origin}${basePath}/${slug}`,
-    label: slug.replace(/-/g, " ")
-  }));
-}
-
-function uniqueLinks(links: { url: string; label: string }[]) {
-  const out: { url: string; label: string }[] = [];
-  const seen = new Set<string>();
-  for (const link of links) {
-    const normalized = link.url.replace(/\/$/, "");
-    if (seen.has(normalized)) continue;
-    seen.add(normalized);
-    out.push({ ...link, url: normalized });
+  if (/(prototype|throwaway|spike|mockup|mockups|sample data|demo data|variation|explore design|wireframe|mvp screen|giao diện mẫu|dữ liệu mẫu)/i.test(normalized)) {
+    return "prototype";
   }
-  return out;
+  if (/(build|package|release|version|cài|install|vsix|deploy|update)/i.test(normalized)) {
+    return "build/release/update";
+  }
+  if (/(ui|html|css|frontend|mockup|website|dashboard|giao diện|design)/i.test(normalized)) {
+    return "frontend/ui";
+  }
+  if (/(review|audit|kiểm tra|refactor|cleanup|format)/i.test(normalized)) {
+    return "review/refactor";
+  }
+  return "general coding task";
+}
+
+function workflowForRequestType(requestType: string) {
+  switch (requestType) {
+    case "frontend-data/static-asset-debug":
+      return [
+        "Selected workflow: Frontend data/static asset diagnose.",
+        "- Reproduce the exact browser console or network error.",
+        "- Locate the fetched JSON/mock/config/static path and inspect the response body, not just the source file.",
+        "- Validate every edited JSON/mock data file with a real parser such as node JSON.parse, python json.tool, jq, or the project's schema validator.",
+        "- Check that the server returns one valid JSON document with the expected Content-Type/status and no appended text/HTML.",
+        "- For 404 assets such as favicon.ico, either add the asset at the requested path, update the link, or remove the broken reference.",
+        "- Do not declare [DONE] until the JSON parser check and the static asset path check pass or the remaining failure is explicitly identified."
+      ].join("\n");
+    case "bugfix/debug":
+      return [
+        "Selected workflow: Diagnose.",
+        "- First create or identify a fast feedback loop: test, script, CLI repro, HTTP request, browser check, or focused build command.",
+        "- Confirm the failure matches the user's symptom before fixing.",
+        "- State 2-4 likely hypotheses only when useful, then test the highest-signal one.",
+        "- Prefer a regression test/check at the seam that exercises the real failure path.",
+        "- Do not declare done until the original repro or closest available loop passes."
+      ].join("\n");
+    case "tdd/test-first":
+      return [
+        "Selected workflow: TDD vertical slices.",
+        "- Identify the public interface and user-visible behavior.",
+        "- Add one focused failing test or check for one behavior.",
+        "- Implement the smallest complete change to pass it.",
+        "- Repeat only if another behavior is essential to the user's request.",
+        "- Refactor after green, not while failing."
+      ].join("\n");
+    case "domain-clarification":
+      return [
+        "Selected workflow: Grill with docs.",
+        "- Read existing code/docs/CONTEXT.md/ADRs before asking.",
+        "- Ask one precise question only when the repo cannot answer it.",
+        "- Resolve vague or conflicting terms into a canonical domain vocabulary.",
+        "- If a term becomes stable and CONTEXT.md exists or should exist, propose updating it.",
+        "- Offer an ADR only for hard-to-reverse, surprising tradeoffs."
+      ].join("\n");
+    case "architecture/refactor":
+      return [
+        "Selected workflow: Architecture review/deepening.",
+        "- Find friction in locality, leverage, testability, seams, caller knowledge, and shallow pass-through modules.",
+        "- Use the deletion test before suggesting new abstractions.",
+        "- Prefer deep modules with small stable interfaces and useful implementation behind them.",
+        "- Respect existing ADRs and domain language.",
+        "- Propose focused refactors with clear verification, not broad rewrites."
+      ].join("\n");
+    case "prototype":
+    case "frontend/ui":
+      return [
+        "Selected workflow: Prototype-first mockup implementation.",
+        "- Treat the user's description as enough to proceed. Infer the target user, workflow, and sample data conservatively.",
+        "- Build an inspectable, runnable mockup now; do not stop at explanation, requirements, or questions.",
+        "- If a tagged file exists, update that file. If the workspace has an obvious app entry, use it. If not, create a clearly named mockup file such as mockups/<feature>.html or mockup.html.",
+        "- For early mockups, completeness means: realistic sample data, visible primary workflow, responsive layout, meaningful empty/loading/error states, and enough interaction to inspect the idea.",
+        "- Prefer one cohesive screen or flow over production architecture. Avoid real backend integration unless it already exists.",
+        "- Verification can be lightweight: HTML syntax sanity, JSON parse for sample data, npm build if applicable, or a note that the file opens directly in a browser."
+      ].join("\n");
+    default:
+      return [
+        "Selected workflow: General engineering.",
+        "- Understand stack and context, make the smallest complete change, verify with the nearest reliable command.",
+        "- Escalate to Diagnose, TDD, Grill with docs, Architecture review, or Prototype if the evidence points there."
+      ].join("\n");
+  }
+}
+
+function buildTaskPrompt(args: {
+  targetRoot: string;
+  requestType: string;
+  context: string;
+  webResearch: string;
+  conversation: string;
+  tagged: string[];
+  attachments: { name: string; text: string }[];
+  question: string;
+}) {
+  const attachments = args.attachments.length
+    ? "\nATTACHMENTS:\n" + args.attachments.map((a) => `[${a.name}]\n${a.text}`).join("\n\n")
+    : "";
+  const tagged = args.tagged.length ? "\nTAGGED FILES OR FOLDERS:\n" + args.tagged.join("\n") : "";
+  const web = args.webResearch ? "\nWEB RESEARCH BUNDLE:\n" + args.webResearch : "";
+  const conversation = args.conversation ? "\nRECENT CONVERSATION, OLDEST TO NEWEST:\n" + args.conversation : "";
+  const workflow = workflowForRequestType(args.requestType);
+  const prototypeTarget =
+    args.requestType === "prototype" || args.requestType === "frontend/ui"
+      ? "\nPROTOTYPE TARGET\n- If no tagged file or obvious app entry should be edited, create or update `mockups/mockup.html` as a standalone runnable mockup with embedded sample data, CSS, and JavaScript.\n- Keep the filename stable unless the user named a specific file. Do not scatter an early mockup across many files unless the existing app structure requires it.\n"
+      : "";
+
+  return `TASK BRIEF
+Request type: ${args.requestType}
+Target root: ${args.targetRoot || "(none)"}
+
+WORKFLOW PLAYBOOK
+${workflow}
+
+LATEST USER REQUEST
+${args.question}
+
+HOW TO INTERPRET THIS REQUEST
+- Solve the latest request, not a generic adjacent task.
+- Use CONTEXT as evidence. Prefer active selection, tagged files, diagnostics, and git changes over broad repository guesses.
+- If the user complains that output/code quality is poor, improve the underlying implementation/prompt/formatting rather than merely apologizing.
+- If the request is short or informal, infer the intended engineering outcome from context and proceed.
+- Apply the expert coding contract from the system instructions. For coding tasks, explicitly think through: stack, touched files, implementation shape, edge cases, and verification.
+- Prefer editing existing files over generating detached snippets. If the repo has a runnable app, make the requested behavior work in that app.
+- For mockup/prototype requests, prioritize creating a visual result with sample data immediately. A good answer changes files first, then explains briefly. Do not answer with only advice.
+- If no active app structure is obvious, create a standalone mockup that can be opened directly in the browser, using embedded sample data and assets/styles in the file or nearby files.
+- For HTML/CSS/JS/TS/Python outputs, use correct language formatting and complete syntax. Do not mix explanation into code blocks.
+- If code changes are needed, provide one clean unified diff that can apply to the current workspace.
+- If verification is available, include safe commands after the diff.
+${prototypeTarget}
+
+CONTEXT
+${args.context}${web}${conversation}${tagged}${attachments}`;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -203,6 +298,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private cmdRunner: CommandRunner;
   private mcpManager: McpClientManager;
   private currentTargetRoot?: vscode.Uri;
+  private appliedChangeSets = new Map<string, AppliedChangeSet>();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -284,6 +380,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const formatted = formatApplyError(e);
           this.output.appendLine(`[safegraph-ai] applyDiff failed: ${formatted}`);
           vscode.window.showErrorMessage(formatted, { modal: true });
+        }
+        return;
+      }
+      if (msg.type === "keepChangeSet") {
+        this.appliedChangeSets.delete(msg.id);
+        webviewView.webview.postMessage({
+          type: "changeSetUpdate",
+          id: msg.id,
+          status: "kept",
+          message: "Changes kept.",
+          ts: Date.now()
+        } satisfies ExtensionToWebviewMessage);
+        return;
+      }
+      if (msg.type === "discardChangeSet") {
+        try {
+          await this.discardChangeSet(msg.id, this.currentTargetRoot);
+          webviewView.webview.postMessage({
+            type: "changeSetUpdate",
+            id: msg.id,
+            status: "discarded",
+            message: "Changes restored to the previous state.",
+            ts: Date.now()
+          } satisfies ExtensionToWebviewMessage);
+        } catch (error) {
+          const message = `Safegraph AI: Discard failed: ${String(error instanceof Error ? error.message : error)}`;
+          this.output.appendLine(message);
+          webviewView.webview.postMessage({
+            type: "changeSetUpdate",
+            id: msg.id,
+            status: "error",
+            message,
+            ts: Date.now()
+          } satisfies ExtensionToWebviewMessage);
+          vscode.window.showErrorMessage(message);
         }
         return;
       }
@@ -444,7 +575,7 @@ RESPONSE GUIDELINES:
 15. If the user only pasted an error, traceback, terminal output, failing test, malformed diff, or code snippet without saying what they want, infer the request as: diagnose it, locate the relevant file(s), fix the underlying issue, and validate the fix. Do not ask "what do you want me to do?" for pasted bugs.
 16. If the user pasted only code, infer whether it is incomplete, duplicated, malformed, or should replace the active file. Use active file/workspace context to decide. Fix syntax/integration issues instead of echoing the code back.
 17. For UI/product tasks, act as a product designer and frontend engineer: infer target users, main workflow, information hierarchy, empty/loading/error states, responsive behavior, accessibility, and visual style before implementation.
-18. If the user asks for a mockup, design, website, dashboard, app screen, or UI improvement, create an implementable mockup in code. Prefer editing/creating real project files such as HTML/CSS/JS/React components. If the repo has no app structure, create a minimal runnable mockup.
+18. If the user asks for a mockup, design, website, dashboard, app screen, or UI improvement, create an implementable mockup in code. Prefer editing/creating real project files such as HTML/CSS/JS/React components. If the repo has no app structure, create a minimal runnable mockup. Do not mix rendered page text and CSS; CSS must live in a stylesheet, a valid <style> block, or the framework's styling mechanism.
 19. For frontend design, use existing project conventions first. Build the actual usable screen, not a marketing explanation. Avoid generic one-color themes, oversized decorative cards, and visible text explaining how to use the UI.
 20. Make UI complete enough to inspect: realistic labels/data, responsive layout, clear primary actions, hover/focus states, error/empty/loading states where relevant.
 21. Before giving final text, make the code complete enough to run. Include verification commands after the diff when useful.
@@ -462,6 +593,18 @@ ${atts.length ? "\nAttachments:\n" + atts.map((a) => `[${a.name}] ${a.text}`).jo
 User query:
 ${maskedQuestion}`;
 
+          const systemPrompt = buildSafegraphSystemPrompt(maskSensitive(targetRoot?.fsPath || ""));
+          const taskPrompt = buildTaskPrompt({
+            targetRoot: maskSensitive(targetRoot?.fsPath || ""),
+            requestType: inferRequestType(maskedQuestion),
+            context: maskedCtx,
+            webResearch: maskedWebResearch,
+            conversation,
+            tagged,
+            attachments: atts,
+            question: maskedQuestion
+          });
+
           const thinking: ExtensionToWebviewMessage = {
             type: "assistantMessage",
             id: msg.id,
@@ -476,7 +619,7 @@ ${maskedQuestion}`;
           let totalAcc = "";
 
           const messages: { role: "user" | "assistant"; text?: string; content?: any[] }[] = [
-            { role: "user", text: prompt }
+            { role: "user", text: taskPrompt }
           ];
 
           const cfg2 = vscode.workspace.getConfiguration("safegraph");
@@ -543,24 +686,86 @@ ${maskedQuestion}`;
             let combined = "";
             let chunkLoops = 0;
             let nextMessages = [...messages];
+            const streamedAppliedDiffBlocks = new Set<string>();
+            const streamedAppliedDiffs: string[] = [];
+            let streamLoopFeedback = "";
+            let streamExecutionFailed = false;
+            let streamedUiText = "";
 
             let isToolLoop = false;
             for (;;) {
-              
-              const r = await bedrockConverse(nextMessages, {
+              const responseOptions = {
                 region,
                 modelId,
                 apiKey,
+                system: systemPrompt,
                 signal: this.currentAbort?.signal,
                 maxTokens: 8192,
                 temperature: 0.2,
                 toolConfig
+              };
+              const streamBaseAcc = totalAcc + (totalAcc ? "\n\n---\n\n" : "");
+              const r = await bedrockConverseStream(nextMessages, responseOptions, {
+                onText: async (_delta, fullText) => {
+                  if (this.currentAbort?.signal.aborted) throw new Error("aborted");
+
+                  const completeDiffs = extractDiffBlocks(fullText);
+                  for (const diffBlock of completeDiffs) {
+                    const diffKey = diffBlock.trim();
+                    if (!diffKey || streamedAppliedDiffBlocks.has(diffKey)) continue;
+                    streamedAppliedDiffBlocks.add(diffKey);
+                    try {
+                      const changeSetId = `${msg.id}-${step}-stream-${Date.now()}-${streamedAppliedDiffBlocks.size}`;
+                      const appliedDiff = await this.applyDiffWithRepair(
+                        diffBlock,
+                        "Streaming autonomous chat code changes",
+                        targetRoot,
+                        changeSetId
+                      );
+                      if (appliedDiff.trim()) {
+                        streamedAppliedDiffs.push(appliedDiff);
+                        webviewView.webview.postMessage({
+                          type: "autoAppliedChangeSet",
+                          id: changeSetId,
+                          diff: appliedDiff,
+                          summary: this.summarizeAppliedDiff(appliedDiff),
+                          ts: Date.now()
+                        } satisfies ExtensionToWebviewMessage);
+                        streamLoopFeedback += "Diff applied live while the model was still responding.\n";
+                      }
+                    } catch (error) {
+                      streamExecutionFailed = true;
+                      streamLoopFeedback += `Failed to live-apply streamed diff: ${String(error)}\n`;
+                    }
+                  }
+
+                  const nextUi = stripDiffBlocksForLiveApply(fullText)
+                    .replace(/\[CONTINUE\]/g, "")
+                    .replace(/\[DONE\]/g, "")
+                    .trim();
+                  if (nextUi && nextUi !== streamedUiText) {
+                    streamedUiText = nextUi;
+                    webviewView.webview.postMessage({
+                      type: "assistantMessage",
+                      id: msg.id,
+                      text: streamBaseAcc + streamedUiText,
+                      ts: Date.now(),
+                      done: false
+                    });
+                  }
+                }
+              }).catch(async (error) => {
+                this.output.appendLine(`[safegraph-ai] ConverseStream failed, falling back to Converse: ${String(error)}`);
+                return bedrockConverse(nextMessages, responseOptions);
               });
               let rawContent = r.raw?.output?.message?.content || [];
               let stopReason = String(r.stopReason || "");
               combined = (combined + (combined ? "\n" : "") + r.text).trim();
               chunkLoops += 1;
               if (this.currentAbort?.signal.aborted) throw new Error("aborted");
+              if (!String(r.text || "").trim() && stopReason !== "tool_use") {
+                throw new Error("Bedrock returned an empty assistant response.");
+              }
               
               if (stopReason === "tool_use") {
                 const toolUses = rawContent.filter((c: any) => c.toolUse);
@@ -628,8 +833,12 @@ ${maskedQuestion}`;
 
             if (isToolLoop) continue;
             
-            // Clean up the text for the UI by removing [CONTINUE] and [DONE]
-            let uiText = combined.replace(/\[CONTINUE\]/g, "").replace(/\[DONE\]/g, "").trim();
+            const diffBlocks = extractDiffBlocks(combined);
+            // Clean up the text for the UI by removing protocol tags and auto-applied patch blocks.
+            let uiText = (diffBlocks.length > 0 ? stripDiffBlocksForLiveApply(combined) : combined)
+              .replace(/\[CONTINUE\]/g, "")
+              .replace(/\[DONE\]/g, "")
+              .trim();
             const baseAcc = totalAcc + (totalAcc && uiText ? "\n\n---\n\n" : "");
             
             messages.push({ role: "assistant", text: combined });
@@ -637,34 +846,73 @@ ${maskedQuestion}`;
               totalAcc = baseAcc + uiText;
             }
 
-            let accChunk = "";
-            const chunkSize = 80;
-            for (let i = 0; i < uiText.length; i += chunkSize) {
-              if (this.currentAbort?.signal.aborted) throw new Error("aborted");
-              accChunk += uiText.slice(i, i + chunkSize);
-              webviewView.webview.postMessage({
-                type: "assistantMessage",
-                id: msg.id,
-                text: baseAcc + accChunk,
-                ts: Date.now(),
-                done: false
-              });
-              await new Promise((r) => setTimeout(r, 10));
+            if (!streamedUiText) {
+              let accChunk = "";
+              const chunkSize = 80;
+              for (let i = 0; i < uiText.length; i += chunkSize) {
+                if (this.currentAbort?.signal.aborted) throw new Error("aborted");
+                accChunk += uiText.slice(i, i + chunkSize);
+                webviewView.webview.postMessage({
+                  type: "assistantMessage",
+                  id: msg.id,
+                  text: baseAcc + accChunk,
+                  ts: Date.now(),
+                  done: false
+                });
+                await new Promise((r) => setTimeout(r, 10));
+              }
             }
 
-            const diffBlocks = extractDiffBlocks(combined);
             let loopFeedback = "";
+            let executionFailed = streamExecutionFailed;
+            if (streamLoopFeedback) {
+              loopFeedback += streamLoopFeedback;
+            }
 
-            if (diffBlocks.length > 0) {
+            const remainingDiffBlocks = diffBlocks.filter((block) => !streamedAppliedDiffBlocks.has(block.trim()));
+            const appliedDiffsForVerification = [...streamedAppliedDiffs];
+
+            if (remainingDiffBlocks.length > 0) {
               try {
-                await this.applyDiffWithRepair(diffBlocks.join("\n\n"), "Autonomous chat code changes", targetRoot);
-                loopFeedback += "Diff applied successfully.\n";
+                const changeSetId = `${msg.id}-${step}-${Date.now()}`;
+                const appliedDiff = await this.applyDiffWithRepair(
+                  remainingDiffBlocks.join("\n\n"),
+                  "Autonomous chat code changes",
+                  targetRoot,
+                  changeSetId
+                );
+                if (appliedDiff.trim()) {
+                  appliedDiffsForVerification.push(appliedDiff);
+                  webviewView.webview.postMessage({
+                    type: "autoAppliedChangeSet",
+                    id: changeSetId,
+                    diff: appliedDiff,
+                    summary: this.summarizeAppliedDiff(appliedDiff),
+                    ts: Date.now()
+                  } satisfies ExtensionToWebviewMessage);
+                }
+                loopFeedback += appliedDiff.trim()
+                  ? "Diff applied successfully and is visible in the workspace. User can keep it or discard all to restore the previous file state.\n"
+                  : "Diff was already present or empty; no workspace changes were applied.\n";
               } catch (e) {
                 loopFeedback += "Failed to apply diff: " + String(e) + "\n";
+                executionFailed = true;
               }
             }
 
             const proposed = this.cmdRunner.proposeFromAssistantText(combined, mode);
+            const verificationCommands =
+              appliedDiffsForVerification.length > 0
+                ? this.inferVerificationCommands(cwd, appliedDiffsForVerification.join("\n\n"), proposed.map((item) => item.cmd))
+                : [];
+            for (const cmd of verificationCommands) {
+              proposed.push({
+                id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                cmd,
+                decision: "allow",
+                reason: "automatic post-change verification"
+              });
+            }
             const runnable = proposed.filter((item) => item.decision === "allow");
             const askOrDenied = proposed.filter((item) => item.decision !== "allow");
 
@@ -678,10 +926,13 @@ ${maskedQuestion}`;
                 if (this.currentAbort?.signal.aborted) break;
                 const result = await this.cmdRunner.runAndWait(item.id, item.cmd, cwd, (m) => webviewView.webview.postMessage(m));
                 loopFeedback += `Command: ${item.cmd}\nExit code: ${result.exitCode}\nOutput:\n${result.output.slice(-12000)}\n\n`;
+                if (result.status !== "success" || result.exitCode !== 0) {
+                  executionFailed = true;
+                }
               }
             }
 
-            if (combined.includes("[DONE]")) {
+            if (combined.includes("[DONE]") && !executionFailed) {
               isDone = true;
               break;
             }
@@ -1004,7 +1255,7 @@ ${maskedQuestion}`;
         {
           method: "GET",
           headers: {
-            "User-Agent": "safegraph-ai-vscode/0.8.1",
+            "User-Agent": "safegraph-ai-vscode/0.12.1",
             Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5"
           },
           timeout: 20_000
@@ -1161,6 +1412,137 @@ ${diff}
     }
   }
 
+  private inferVerificationCommands(cwd: string, diff: string, existingCommands: string[]) {
+    const existing = new Set(existingCommands.map((cmd) => cmd.trim()));
+    const commands: string[] = [];
+    const add = (cmd: string) => {
+      if (!cmd || existing.has(cmd) || commands.includes(cmd)) return;
+      commands.push(cmd);
+    };
+
+    const changedFiles = this.extractChangedFilesFromDiff(diff);
+    const packageJsonPath = path.join(cwd, "package.json");
+    if (fs.existsSync(packageJsonPath)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+        const scripts = pkg?.scripts || {};
+        if (scripts.build) {
+          add("npm run build");
+        } else if (scripts["build:ext"]) {
+          add("npm run build:ext");
+        } else if (fs.existsSync(path.join(cwd, "tsconfig.json"))) {
+          add("npx tsc -p . --noEmit");
+        }
+
+        if (scripts.test && changedFiles.some((file) => /\.(test|spec)\.[cm]?[jt]sx?$/i.test(file))) {
+          add("npm test");
+        }
+      } catch (error) {
+        this.output.appendLine(`[safegraph-ai] failed to infer npm verification: ${String(error)}`);
+      }
+    }
+
+    for (const file of changedFiles.filter((item) => item.endsWith(".json")).slice(0, 8)) {
+      if (fs.existsSync(path.join(cwd, file))) {
+        const jsPath = file.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+        const escapedLabel = file.replace(/'/g, "\\'");
+        add(`node -e "JSON.parse(require('fs').readFileSync('${jsPath}', 'utf8')); console.log('json ok: ${escapedLabel}')"`);
+      }
+    }
+
+    const pythonFiles = changedFiles.filter((file) => file.endsWith(".py")).slice(0, 12);
+    if (pythonFiles.length > 0) {
+      add(`python -m py_compile ${pythonFiles.map(shellQuote).join(" ")}`);
+    }
+
+    return commands.slice(0, 4);
+  }
+
+  private extractChangedFilesFromDiff(diff: string) {
+    try {
+      return parseUnifiedDiff(diff)
+        .map((patch) => patch.filePath || patch.newPath || patch.oldPath)
+        .filter((file): file is string => !!file && file !== "/dev/null");
+    } catch {
+      const files: string[] = [];
+      for (const match of String(diff || "").matchAll(/^\+\+\+\s+(?!\/dev\/null)(?:b\/)?([^\t\r\n]+)/gm)) {
+        if (match[1]) files.push(match[1].trim());
+      }
+      return files;
+    }
+  }
+
+  private summarizeAppliedDiff(diff: string) {
+    const patches = parseUnifiedDiff(diff);
+    if (patches.length === 0) return "No file changes.";
+    const counts = patches.reduce(
+      (acc, patch) => {
+        acc[patch.kind] += 1;
+        return acc;
+      },
+      { create: 0, update: 0, delete: 0 }
+    );
+    const parts = [
+      counts.create ? `${counts.create} created` : "",
+      counts.update ? `${counts.update} updated` : "",
+      counts.delete ? `${counts.delete} deleted` : ""
+    ].filter(Boolean);
+    return `${patches.length} file${patches.length === 1 ? "" : "s"} applied${parts.length ? ` (${parts.join(", ")})` : ""}.`;
+  }
+
+  private async snapshotFilesForDiff(diff: string, targetRoot?: vscode.Uri): Promise<FileSnapshot[]> {
+    const root = targetRoot || vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!root) throw new Error("No workspace root is available for snapshot.");
+
+    const snapshots: FileSnapshot[] = [];
+    const seen = new Set<string>();
+    for (const patch of parseUnifiedDiff(diff)) {
+      const filePath = patch.filePath || patch.newPath || patch.oldPath;
+      if (!filePath || seen.has(filePath)) continue;
+      seen.add(filePath);
+      const uri = vscode.Uri.joinPath(root, filePath);
+      try {
+        const content = await vscode.workspace.fs.readFile(uri);
+        snapshots.push({ path: filePath, existed: true, content });
+      } catch {
+        snapshots.push({ path: filePath, existed: false });
+      }
+    }
+    return snapshots;
+  }
+
+  private async discardChangeSet(id: string, targetRoot?: vscode.Uri) {
+    const changeSet = this.appliedChangeSets.get(id);
+    if (!changeSet) throw new Error("change set is no longer available");
+    const root = targetRoot || vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!root) throw new Error("No workspace root is available for restore.");
+
+    for (const snapshot of changeSet.snapshots) {
+      const uri = vscode.Uri.joinPath(root, snapshot.path);
+      if (snapshot.existed) {
+        await this.ensureParentDirectory(uri);
+        await vscode.workspace.fs.writeFile(uri, snapshot.content || new Uint8Array());
+      } else {
+        try {
+          await vscode.workspace.fs.delete(uri, { recursive: true, useTrash: false });
+        } catch {
+          // The file may already be gone; restore is still complete for this path.
+        }
+      }
+    }
+
+    this.appliedChangeSets.delete(id);
+  }
+
+  private async ensureParentDirectory(uri: vscode.Uri) {
+    const parent = vscode.Uri.file(path.dirname(uri.fsPath));
+    try {
+      await vscode.workspace.fs.createDirectory(parent);
+    } catch {
+      // createDirectory is recursive in VS Code; ignore races.
+    }
+  }
+
   private async prepareDiffForApply(diff: string, reason: string, targetRoot?: vscode.Uri) {
     try {
       await preflightUnifiedDiffAgainstWorkspace(diff, { rootUri: targetRoot });
@@ -1198,12 +1580,21 @@ ${diff}
     }
   }
 
-  private async applyDiffWithRepair(diff: string, reason: string, targetRoot?: vscode.Uri) {
+  private async applyDiffWithRepair(diff: string, reason: string, targetRoot?: vscode.Uri, changeSetId?: string) {
     const prepared = await this.prepareDiffForApply(diff, reason, targetRoot);
-    if (!prepared.trim()) return;
+    if (!prepared.trim()) return "";
     try {
+      const snapshots = changeSetId ? await this.snapshotFilesForDiff(prepared, targetRoot) : [];
       await applyUnifiedDiffToWorkspaceSmart(prepared, this.output, { rootUri: targetRoot });
-      return;
+      if (changeSetId) {
+        this.appliedChangeSets.set(changeSetId, {
+          id: changeSetId,
+          diff: prepared,
+          snapshots,
+          createdAt: Date.now()
+        });
+      }
+      return prepared;
     } catch (firstApplyError) {
       const firstApplyMessage = String(firstApplyError instanceof Error ? firstApplyError.message : firstApplyError);
       if (!/Hunk out of range|Context mismatch|Delete line mismatch|patch does not apply|git apply/i.test(firstApplyMessage)) {
@@ -1218,12 +1609,21 @@ ${diff}
       );
       if (!repaired.trim()) {
         this.output.appendLine("[safegraph-ai] apply repair returned empty diff; treating as no-op");
-        return;
+        return "";
       }
       await preflightUnifiedDiffAgainstWorkspace(repaired, { rootUri: targetRoot });
       try {
+        const snapshots = changeSetId ? await this.snapshotFilesForDiff(repaired, targetRoot) : [];
         await applyUnifiedDiffToWorkspaceSmart(repaired, this.output, { rootUri: targetRoot });
-        return;
+        if (changeSetId) {
+          this.appliedChangeSets.set(changeSetId, {
+            id: changeSetId,
+            diff: repaired,
+            snapshots,
+            createdAt: Date.now()
+          });
+        }
+        return repaired;
       } catch (secondApplyError) {
         const secondApplyMessage = String(secondApplyError instanceof Error ? secondApplyError.message : secondApplyError);
         this.output.appendLine(`[safegraph-ai] repaired apply failed, retrying once: ${secondApplyMessage}`);
@@ -1235,10 +1635,20 @@ ${diff}
         );
         if (!secondRepair.trim()) {
           this.output.appendLine("[safegraph-ai] second apply repair returned empty diff; treating as no-op");
-          return;
+          return "";
         }
         await preflightUnifiedDiffAgainstWorkspace(secondRepair, { rootUri: targetRoot });
+        const snapshots = changeSetId ? await this.snapshotFilesForDiff(secondRepair, targetRoot) : [];
         await applyUnifiedDiffToWorkspaceSmart(secondRepair, this.output, { rootUri: targetRoot });
+        if (changeSetId) {
+          this.appliedChangeSets.set(changeSetId, {
+            id: changeSetId,
+            diff: secondRepair,
+            snapshots,
+            createdAt: Date.now()
+          });
+        }
+        return secondRepair;
       }
     }
   }
