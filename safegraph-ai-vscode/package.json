@@ -1,12 +1,12 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.12.1",
+  "displayName": "Safegraph AI v0.13.0",
   "description": "MVP sidebar AI chat with local code-graph context and Bedrock integration.",
   "repository": {
     "type": "git",
     "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
   },
-  "version": "0.12.1",
+  "version": "0.13.0",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
@@ -90,7 +90,7 @@
       }
     ],
     "configuration": {
-      "title": "Safegraph AI v0.12.1",
+      "title": "Safegraph AI v0.13.0",
       "properties": {
         "safegraph.autoRun": {
           "type": "string",
@@ -151,7 +151,7 @@
       "activitybar": [
         {
           "id": "safegraph",
-          "title": "Safegraph AI v0.12.1",
+          "title": "Safegraph AI v0.13.0",
           "icon": "media/icon.svg"
         }
       ]
