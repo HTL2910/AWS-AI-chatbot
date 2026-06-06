@@ -11,7 +11,7 @@ import { loadBedrockApiKeyFromDotEnv, loadBedrockApiKeyInfos, maskApiKey } from 
 import { applyUnifiedDiffToWorkspaceSmart, parseUnifiedDiff, preflightUnifiedDiffAgainstWorkspace } from "../apply/unifiedDiff";
 import { McpClientManager } from "../mcp/McpClient";
 import { CommandRunner, CommandRunResult, CommandUpdateMessage } from "../terminal/commandRunner";
-import { AutoRunMode } from "../terminal/commandPolicy";
+import { AutoRunMode, decideCommand } from "../terminal/commandPolicy";
 import { extractDiffBlocks, formatApplyError, shellQuote, stripDiffBlocksForLiveApply } from "./diffText";
 import {
   extractPageTitle,
@@ -97,6 +97,14 @@ type AgentTaskState = {
   commandsExecuted: { cmd: string; exitCode?: number; status: "success" | "error" | "canceled" }[];
   verification: { command: string; passed: boolean; outputTail: string; ts: number }[];
   errors: string[];
+  contextCache?: {
+    key: string;
+    context: string;
+    webResearch: string;
+    createdAt: number;
+    fileVersion: number;
+  };
+  agentNotes: { role: "context-scout" | "reviewer" | "test-fixer"; note: string; ts: number }[];
 };
 
 function buildSafegraphSystemPrompt(targetRoot: string) {
@@ -313,6 +321,11 @@ Target root: ${args.targetRoot || "(none)"}
 WORKFLOW PLAYBOOK
 ${workflow}
 ${args.taskState ? `\nCURRENT TASK STATE\n${args.taskState}\n` : ""}
+
+LOCAL TOOLING CONTRACT
+- Prefer Safegraph local tools for incremental inspection: safegraph__read_file, safegraph__search_files, safegraph__list_files, safegraph__run_verification.
+- Use tools to read/search targeted files instead of asking for pasted content or relying on stale broad context.
+- Prefer smaller edits backed by tool evidence over long speculative diffs.
 
 LATEST USER REQUEST
 ${args.question}
@@ -569,25 +582,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
           );
           const taggedFilesForRequest = msg.taggedFiles || [];
+          const maskedQuestion = maskSensitive(msg.text);
+          const requestType = inferRequestType(maskedQuestion);
+          const taskState = this.getOrCreateTaskState(maskedQuestion, requestType, targetRoot?.fsPath || "");
           const includeRepositoryContext = shouldUseRepositoryContext(msg.text, taggedFilesForRequest);
           const fullRepositoryContext = shouldUseFullRepositoryContext(msg.text, taggedFilesForRequest);
           const contextMaxChars = fullRepositoryContext ? 22000 : includeRepositoryContext ? 16000 : 10000;
 
-          const ctx = await buildContext({
-            maxChars: contextMaxChars,
-            maxFiles: fullRepositoryContext ? 80 : 50,
-            includeFiles: taggedFilesForRequest.filter((p) => p !== "@Repository"),
-            query: msg.text,
-            storageUri: this.context.globalStorageUri,
-            includeRepository: includeRepositoryContext,
-            targetRoot
+          const contextBundle = await this.getContextBundleForTask({
+            task: taskState,
+            userText: msg.text,
+            targetRoot,
+            taggedFiles: taggedFilesForRequest,
+            includeRepositoryContext,
+            fullRepositoryContext,
+            contextMaxChars
           });
-          const webResearch = await this.buildWebResearchBundle(msg.text);
-          const maskedCtx = maskSensitive(ctx);
-          const maskedWebResearch = maskSensitive(webResearch);
-          const maskedQuestion = maskSensitive(msg.text);
-          const requestType = inferRequestType(maskedQuestion);
-          const taskState = this.getOrCreateTaskState(maskedQuestion, requestType, targetRoot?.fsPath || "");
+          const maskedCtx = maskSensitive(contextBundle.context);
+          const maskedWebResearch = maskSensitive(contextBundle.webResearch);
+          await this.runLightweightSubagents(taskState, requestType, contextBundle.context);
           const conversation = this.buildConversationMemory(maskedQuestion);
           const taskStatePrompt = this.formatTaskStateForPrompt(taskState);
           const tagged = (msg.taggedFiles || []).map((p) => maskSensitive(p));
@@ -636,6 +649,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           let toolConfig: any = undefined;
           const toolsList: any[] = [];
+          toolsList.push(...this.localToolSpecs());
 
           // Connect default CodeGraph MCP
           try {
@@ -678,13 +692,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     this.output.appendLine(`[MCP] Error connecting to ${serverId}: ${e}`);
                   }
                 }
-                if (toolsList.length > 0) {
-                  toolConfig = { tools: toolsList };
-                }
               }
             }
           } catch(e) {
             this.output.appendLine(`[MCP] Error loading mcp.json: ${e}`);
+          }
+          if (toolsList.length > 0) {
+            toolConfig = { tools: toolsList };
           }
 
           for (let step = 0; step < maxTaskLoops; step++) {
@@ -798,11 +812,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                       const toolName = nameParts.slice(1).join("__");
                       this.output.appendLine(`[MCP] Calling ${serverId} -> ${toolName}`);
                       
-                      const result = await this.mcpManager.callTool(serverId, toolName, call.input);
+                      const result =
+                        serverId === "safegraph"
+                          ? await this.callLocalTool(toolName, call.input, cwd, targetRoot, webviewView.webview)
+                          : await this.mcpManager.callTool(serverId, toolName, call.input);
                       
                       // extract text content from result
                       let resultText = "";
-                      if (result && Array.isArray(result.content)) {
+                      if (typeof result === "string") {
+                        resultText = result;
+                      } else if (result && Array.isArray(result.content)) {
                         resultText = result.content.map((c:any) => c.text).join("\n");
                       } else {
                         resultText = JSON.stringify(result);
@@ -946,6 +965,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
             if (combined.includes("[DONE]") && !executionFailed) {
               await this.markTaskCompleted(totalAcc || combined);
+              const evidenceReport = this.formatEvidenceReport();
+              if (evidenceReport && !totalAcc.includes("Evidence Report")) {
+                totalAcc = `${totalAcc.trim()}\n\n${evidenceReport}`.trim();
+              }
               isDone = true;
               break;
             }
@@ -1014,11 +1037,196 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return parts.join("\n\n");
   }
 
+  private localToolSpecs() {
+    return [
+      {
+        toolSpec: {
+          name: "safegraph__read_file",
+          description: "Read a workspace file by relative path. Use this instead of asking the user to paste file contents.",
+          inputSchema: {
+            json: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "Workspace-relative file path" },
+                maxChars: { type: "number", description: "Maximum characters to return, default 12000" }
+              },
+              required: ["path"]
+            }
+          }
+        }
+      },
+      {
+        toolSpec: {
+          name: "safegraph__search_files",
+          description: "Search workspace text files for a literal or regex pattern and return compact matches.",
+          inputSchema: {
+            json: {
+              type: "object",
+              properties: {
+                query: { type: "string", description: "Search pattern" },
+                glob: { type: "string", description: "Optional workspace glob, default source files" },
+                regex: { type: "boolean", description: "Treat query as regex" },
+                maxResults: { type: "number", description: "Maximum match lines, default 40" }
+              },
+              required: ["query"]
+            }
+          }
+        }
+      },
+      {
+        toolSpec: {
+          name: "safegraph__list_files",
+          description: "List workspace files matching a glob, with compact relative paths.",
+          inputSchema: {
+            json: {
+              type: "object",
+              properties: {
+                glob: { type: "string", description: "Workspace glob, default source files" },
+                maxResults: { type: "number", description: "Maximum paths, default 120" }
+              }
+            }
+          }
+        }
+      },
+      {
+        toolSpec: {
+          name: "safegraph__run_verification",
+          description: "Run a safe build/test/typecheck/lint command and return compact output. Unsafe commands are refused.",
+          inputSchema: {
+            json: {
+              type: "object",
+              properties: {
+                command: { type: "string", description: "Verification command such as npm run build, npm test, pytest, or tsc" }
+              },
+              required: ["command"]
+            }
+          }
+        }
+      }
+    ];
+  }
+
+  private async callLocalTool(toolName: string, input: any, cwd: string, targetRoot: vscode.Uri | undefined, webview: vscode.Webview) {
+    switch (toolName) {
+      case "read_file":
+        return await this.localReadFile(input, targetRoot);
+      case "search_files":
+        return await this.localSearchFiles(input, targetRoot);
+      case "list_files":
+        return await this.localListFiles(input, targetRoot);
+      case "run_verification":
+        return await this.localRunVerification(input, cwd, webview);
+      default:
+        throw new Error(`Unknown Safegraph local tool: ${toolName}`);
+    }
+  }
+
+  private localToolRoot(targetRoot?: vscode.Uri) {
+    return targetRoot || vscode.workspace.workspaceFolders?.[0]?.uri;
+  }
+
+  private resolveWorkspaceToolPath(rawPath: string, targetRoot?: vscode.Uri) {
+    const root = this.localToolRoot(targetRoot);
+    if (!root) throw new Error("No workspace root is available.");
+    const rel = String(rawPath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!rel || rel.includes("\u0000")) throw new Error("Invalid file path.");
+    const uri = vscode.Uri.joinPath(root, rel);
+    const normalizedRoot = path.resolve(root.fsPath);
+    const normalizedFile = path.resolve(uri.fsPath);
+    if (normalizedFile !== normalizedRoot && !normalizedFile.startsWith(normalizedRoot + path.sep)) {
+      throw new Error("Path escapes the workspace root.");
+    }
+    return { root, uri, rel };
+  }
+
+  private async localReadFile(input: any, targetRoot?: vscode.Uri) {
+    const { uri, rel } = this.resolveWorkspaceToolPath(String(input?.path || ""), targetRoot);
+    const maxChars = clampNumber(input?.maxChars, 12000, 1000, 30000);
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    const text = Buffer.from(bytes).toString("utf8");
+    if (text.includes("\u0000")) throw new Error(`${rel} appears to be binary.`);
+    if (text.length <= maxChars) return `--- ${rel} ---\n${text}`;
+    return `--- ${rel} (truncated) ---\n${text.slice(0, Math.floor(maxChars * 0.65))}\n\n[...middle truncated...]\n\n${text.slice(-Math.floor(maxChars * 0.25))}`;
+  }
+
+  private async localListFiles(input: any, targetRoot?: vscode.Uri) {
+    const root = this.localToolRoot(targetRoot);
+    if (!root) throw new Error("No workspace root is available.");
+    const glob = String(input?.glob || "**/*.{ts,tsx,js,jsx,py,css,html,json,md,yml,yaml,toml}").slice(0, 200);
+    const maxResults = clampNumber(input?.maxResults, 120, 1, 500);
+    const files = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(root, glob),
+      "**/{node_modules,.git,dist,build,out,venv,.venv,__pycache__,coverage,.next}/**",
+      maxResults
+    );
+    return files.map((uri) => path.relative(root.fsPath, uri.fsPath).replace(/\\/g, "/")).join("\n") || "(no files)";
+  }
+
+  private async localSearchFiles(input: any, targetRoot?: vscode.Uri) {
+    const root = this.localToolRoot(targetRoot);
+    if (!root) throw new Error("No workspace root is available.");
+    const query = String(input?.query || "");
+    if (!query.trim()) throw new Error("Missing search query.");
+    const regex = Boolean(input?.regex);
+    const maxResults = clampNumber(input?.maxResults, 40, 1, 120);
+    const glob = String(input?.glob || "**/*.{ts,tsx,js,jsx,py,css,html,json,md,yml,yaml,toml}").slice(0, 200);
+    const files = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(root, glob),
+      "**/{node_modules,.git,dist,build,out,venv,.venv,__pycache__,coverage,.next}/**",
+      400
+    );
+    const re = regex ? new RegExp(query, "i") : undefined;
+    const needle = query.toLowerCase();
+    const matches: string[] = [];
+    for (const uri of files) {
+      if (matches.length >= maxResults) break;
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        if (stat.size > 300_000) continue;
+        const text = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
+        if (text.includes("\u0000")) continue;
+        const rel = path.relative(root.fsPath, uri.fsPath).replace(/\\/g, "/");
+        const lines = text.split(/\r?\n/);
+        for (let i = 0; i < lines.length && matches.length < maxResults; i++) {
+          const line = lines[i];
+          const found = re ? re.test(line) : line.toLowerCase().includes(needle);
+          if (found) matches.push(`${rel}:${i + 1}: ${line.trim().slice(0, 240)}`);
+        }
+      } catch {
+        // Ignore unreadable files.
+      }
+    }
+    return matches.join("\n") || "(no matches)";
+  }
+
+  private async localRunVerification(input: any, cwd: string, webview: vscode.Webview) {
+    const command = String(input?.command || "").trim();
+    if (!command) throw new Error("Missing verification command.");
+    if (!/\b(test|build|typecheck|lint|pytest|jest|tsc|py_compile|cargo test|go test)\b/i.test(command)) {
+      throw new Error("Refusing to run a non-verification command through run_verification.");
+    }
+    const decision = decideCommand(command, "safe");
+    if (decision.decision !== "allow") {
+      throw new Error(`Verification command requires approval or is unsafe: ${decision.reason}`);
+    }
+    const id = `tool-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const result = await this.cmdRunner.runAndWait(id, command, cwd, (m) => webview.postMessage(m));
+    await this.recordTaskCommandResult(result);
+    return [
+      `Command: ${result.cmd}`,
+      `Status: ${result.status}`,
+      `Exit code: ${result.exitCode ?? "(unknown)"}`,
+      "Output:",
+      result.output.slice(-8000) || "(no output)"
+    ].join("\n");
+  }
+
   private loadPersistedTaskState() {
     const raw = this.context.globalState.get("safegraph.activeTaskState");
     if (!raw || typeof raw !== "object") return undefined;
     const task = raw as AgentTaskState;
     if (!task.id || !task.goal || !Array.isArray(task.steps)) return undefined;
+    if (!Array.isArray(task.agentNotes)) task.agentNotes = [];
     return task.status === "active" ? task : undefined;
   }
 
@@ -1087,8 +1295,113 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       filesChanged: [],
       commandsExecuted: [],
       verification: [],
-      errors: []
+      errors: [],
+      agentNotes: []
     };
+  }
+
+  private async getContextBundleForTask(args: {
+    task: AgentTaskState;
+    userText: string;
+    targetRoot?: vscode.Uri;
+    taggedFiles: string[];
+    includeRepositoryContext: boolean;
+    fullRepositoryContext: boolean;
+    contextMaxChars: number;
+  }) {
+    const includeFiles = args.taggedFiles.filter((p) => p !== "@Repository");
+    const key = [
+      args.targetRoot?.fsPath || "",
+      args.includeRepositoryContext ? "repo" : "no-repo",
+      args.fullRepositoryContext ? "full" : "compact",
+      args.contextMaxChars,
+      includeFiles.join("|"),
+      extractUrls(args.userText).join("|"),
+      this.isCommandFeedback(args.userText) ? "command-feedback" : Array.from(this.keywordSet(args.userText)).slice(0, 24).join("|")
+    ].join("\n");
+    const fileVersion = args.task.filesChanged.length;
+    const cache = args.task.contextCache;
+    const cacheFresh = cache && cache.key === key && cache.fileVersion === fileVersion && Date.now() - cache.createdAt < 10 * 60 * 1000;
+    if (cacheFresh) {
+      return {
+        context: `${cache.context}\n\nContext cache: reused for task ${args.task.id}.`,
+        webResearch: cache.webResearch
+      };
+    }
+
+    const context = await buildContext({
+      maxChars: args.contextMaxChars,
+      maxFiles: args.fullRepositoryContext ? 80 : 50,
+      includeFiles,
+      query: args.userText,
+      storageUri: this.context.globalStorageUri,
+      includeRepository: args.includeRepositoryContext,
+      targetRoot: args.targetRoot
+    });
+    const webResearch = await this.buildWebResearchBundle(args.userText);
+    args.task.contextCache = {
+      key,
+      context,
+      webResearch,
+      createdAt: Date.now(),
+      fileVersion
+    };
+    await this.persistTaskState();
+    return { context, webResearch };
+  }
+
+  private async runLightweightSubagents(task: AgentTaskState, requestType: string, context: string) {
+    const contextScout = this.contextScoutNote(context);
+    if (contextScout) this.addAgentNote(task, "context-scout", contextScout);
+
+    const reviewer = this.reviewerNote(task, context);
+    if (reviewer) this.addAgentNote(task, "reviewer", reviewer);
+
+    const testFixer = this.testFixerNote(task, requestType);
+    if (testFixer) this.addAgentNote(task, "test-fixer", testFixer);
+
+    await this.persistTaskState();
+  }
+
+  private addAgentNote(task: AgentTaskState, role: AgentTaskState["agentNotes"][number]["role"], note: string) {
+    const normalized = note.replace(/\s+/g, " ").trim();
+    if (!normalized) return;
+    const key = `${role}:${normalized.toLowerCase().slice(0, 180)}`;
+    const existing = new Set(task.agentNotes.map((item) => `${item.role}:${item.note.toLowerCase().replace(/\s+/g, " ").slice(0, 180)}`));
+    if (existing.has(key)) return;
+    task.agentNotes.push({ role, note: normalized.slice(0, 700), ts: Date.now() });
+    if (task.agentNotes.length > 12) task.agentNotes = task.agentNotes.slice(-12);
+    task.updatedAt = Date.now();
+  }
+
+  private contextScoutNote(context: string) {
+    const lines = String(context || "").split(/\r?\n/);
+    const active = lines.find((line) => line.startsWith("Active file:")) || "";
+    const target = lines.find((line) => line.startsWith("Target root for this task:")) || "";
+    const diagnostics = lines.find((line) => /^Errors \(|^Warnings \(/.test(line)) || "";
+    const repo = lines.find((line) => line.includes("Repository code-specific context")) || "";
+    return [target, active, diagnostics, repo ? "Repository RAG is present; prefer targeted tool reads for missing details." : ""]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  private reviewerNote(task: AgentTaskState, context: string) {
+    const notes: string[] = [];
+    if (task.filesChanged.length) notes.push(`Review changed files first: ${task.filesChanged.slice(-8).join(", ")}.`);
+    if (/Git status:\n[\s\S]*\b(M|A|D|\?\?)\s+/i.test(context)) notes.push("Workspace has uncommitted changes; avoid unrelated rewrites and preserve user edits.");
+    if (task.errors.length) notes.push(`Open error should drive next action: ${task.errors[task.errors.length - 1].slice(0, 260)}.`);
+    return notes.join(" ");
+  }
+
+  private testFixerNote(task: AgentTaskState, requestType: string) {
+    const failed = task.verification.slice().reverse().find((item) => !item.passed);
+    if (failed) {
+      return `Latest verification failed: ${failed.command}. Use output tail to fix root cause, then rerun the smallest failing command. Tail: ${failed.outputTail.slice(-360)}`;
+    }
+    if (/(bugfix|tdd|test|debug)/i.test(requestType) && task.verification.length === 0) {
+      return "No verification has passed yet; after changes, run the smallest relevant build/test/typecheck command.";
+    }
+    return "";
   }
 
   private initialTaskSteps(requestType: string) {
@@ -1139,6 +1452,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       );
     }
     if (task.errors.length) lines.push(`Open errors: ${task.errors.slice(-4).map((e) => maskSensitive(e).slice(0, 260)).join(" | ")}`);
+    if (task.agentNotes.length) {
+      lines.push(
+        "Subagent notes: " +
+          task.agentNotes
+            .slice(-6)
+            .map((item) => `${item.role}: ${maskSensitive(item.note).slice(0, 260)}`)
+            .join(" | ")
+      );
+    }
     lines.push("Use this state to continue the same task. Do not repeat completed work unless new evidence contradicts it.");
     return lines.join("\n");
   }
@@ -1170,6 +1492,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     for (const file of this.extractChangedFilesFromDiff(diff)) {
       if (!task.filesChanged.includes(file)) task.filesChanged.push(file);
     }
+    task.contextCache = undefined;
     this.advanceTaskStep(/apply|implement|refactor|screen|changes/i, "completed", this.summarizeAppliedDiff(diff));
     await this.persistTaskState();
   }
@@ -1223,6 +1546,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     task.updatedAt = Date.now();
     await this.persistTaskState();
+  }
+
+  private formatEvidenceReport() {
+    const task = this.activeTaskState;
+    if (!task) return "";
+    const verification = task.verification.slice(-6);
+    const passed = verification.filter((item) => item.passed).length;
+    const failed = verification.filter((item) => !item.passed).length;
+    const remainingRisk = task.errors.length
+      ? `Open errors remain: ${task.errors.slice(-3).map((e) => maskSensitive(e).slice(0, 220)).join(" | ")}`
+      : failed > 0
+        ? "A previous verification failed; confirm the latest repair covered it."
+        : verification.length === 0
+          ? "No verification command was recorded."
+          : "No open errors recorded.";
+
+    return [
+      "Evidence Report",
+      `- Task: ${maskSensitive(task.goal).slice(0, 240)}`,
+      `- Files changed: ${task.filesChanged.length ? task.filesChanged.slice(-12).join(", ") : "(none recorded)"}`,
+      `- Commands run: ${
+        task.commandsExecuted.length
+          ? task.commandsExecuted
+              .slice(-8)
+              .map((item) => `${item.cmd} => ${item.status}${item.exitCode === undefined ? "" : ` (${item.exitCode})`}`)
+              .join("; ")
+          : "(none recorded)"
+      }`,
+      `- Verification: ${verification.length ? `${passed} passed, ${failed} failed` : "none recorded"}`,
+      `- Remaining risk: ${remainingRisk}`
+    ].join("\n");
   }
 
   private selectRecentHistoryForPrompt(latestQuestion: string) {
