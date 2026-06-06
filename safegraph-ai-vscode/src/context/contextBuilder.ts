@@ -134,7 +134,7 @@ async function getProjectManifestSnapshot(targetRoot?: vscode.Uri) {
   const parts: string[] = [];
 
   for (const name of manifestNames) {
-    const text = await readRootFile(root, name, name === "README.md" ? 5000 : 8000);
+    const text = await readRootFile(root, name, name === "README.md" ? 3000 : 5000);
     if (text.trim()) {
       parts.push(`--- ${name} ---\n${text}`);
     }
@@ -190,7 +190,7 @@ export async function buildContext(options: ContextBuildOptions = {}) {
     if (selected) {
       pushSection(priorityParts, "Selected text", selected, 6000);
     } else {
-      pushSection(priorityParts, "Active file tail (last 160 lines)", takeLastLines(doc.getText(), 160), 10000);
+      pushSection(priorityParts, "Active file tail (last 100 lines)", takeLastLines(doc.getText(), 100), 7000);
     }
   } else {
     priorityParts.push("Active file: (none)");
@@ -233,7 +233,7 @@ export async function buildContext(options: ContextBuildOptions = {}) {
     if (hints.length) backgroundParts.push(`Framework: ${hints.join(", ")}`);
     
     backgroundParts.push(`Project files (${Math.min(maxFiles, files.length)} of ${files.length} visible):`);
-    backgroundParts.push(files.map((u) => u.fsPath).join("\n"));
+    backgroundParts.push(files.map((u) => (targetRoot ? path.relative(targetRoot.fsPath, u.fsPath).replace(/\\/g, "/") : u.fsPath)).join("\n"));
   } catch {
     // ignore
   }
@@ -258,8 +258,8 @@ export async function buildContext(options: ContextBuildOptions = {}) {
         storageUri: options.storageUri,
         rootUri: targetRoot,
         maxFiles: Number(cfg.get("repositoryRag.maxFiles", 800)),
-        maxChunks: Number(cfg.get("repositoryRag.maxChunks", 10)),
-        maxChars: Number(cfg.get("repositoryRag.maxChars", 18000))
+        maxChunks: Math.max(1, Math.min(8, Number(cfg.get("repositoryRag.maxChunks", 6)))),
+        maxChars: Math.max(3000, Math.min(12000, Number(cfg.get("repositoryRag.maxChars", 10000))))
       });
       if (repositoryContext) priorityParts.push(repositoryContext);
     } catch (e) {

@@ -79,6 +79,7 @@ function renderEnhancedDiff(diffText) {
   let lastSubmit = { text: "", at: 0 };
   let lastAssistantFinal = { text: "", at: 0 };
   let loadingTicker = null;
+  let pendingCommandFeedback = null;
   let agentMode = document.body?.dataset?.agentDefault !== "false";
   const taggedFilesEl = document.createElement("div");
   taggedFilesEl.className = "taggedFilesList";
@@ -117,12 +118,26 @@ function renderEnhancedDiff(diffText) {
     composerMetaEl.textContent = parts.join(" · ");
   }
 
+  function drainPendingCommandFeedback() {
+    if (!pendingCommandFeedback || currentMessageId) return;
+    const text = pendingCommandFeedback;
+    pendingCommandFeedback = null;
+    setTimeout(() => {
+      if (currentMessageId) {
+        pendingCommandFeedback = text;
+        return;
+      }
+      sendPrompt(text, { agentMode: true });
+    }, 0);
+  }
+
   function resetCurrentRequest() {
     currentMessageId = null;
     sendEl.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
     sendEl.disabled = false;
     setStatus("Ready", "idle");
     updateComposerMeta();
+    drainPendingCommandFeedback();
   }
 
   function stopCurrentRequest() {
@@ -1002,6 +1017,10 @@ function renderEnhancedDiff(diffText) {
     if (msg.type === "fileSuggestions") renderSuggestions(msg.items || []);
     if (msg.type === "commandProposed") renderCommandPanel(msg.items || []);
     if (msg.type === "commandUpdate") updateCommand(msg);
+    if (msg.type === "commandFinishedAndFeedback") {
+      pendingCommandFeedback = String(msg.text || "");
+      drainPendingCommandFeedback();
+    }
     if (msg.type === "autoAppliedChangeSet") renderAutoAppliedChangeSet(msg);
     if (msg.type === "changeSetUpdate") updateLiveChangePanel(msg);
   });

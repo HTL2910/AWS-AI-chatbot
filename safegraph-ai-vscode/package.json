@@ -126,14 +126,14 @@
         },
         "safegraph.repositoryRag.maxChunks": {
           "type": "number",
-          "default": 10,
+          "default": 6,
           "minimum": 1,
           "maximum": 40,
           "description": "Maximum retrieved repository chunks included in each prompt."
         },
         "safegraph.repositoryRag.maxChars": {
           "type": "number",
-          "default": 18000,
+          "default": 10000,
           "minimum": 2000,
           "maximum": 80000,
           "description": "Maximum characters of repository RAG context included in each prompt."

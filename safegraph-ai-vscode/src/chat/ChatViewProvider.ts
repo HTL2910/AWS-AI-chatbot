@@ -59,6 +59,7 @@ type ExtensionToWebviewMessage =
   | { type: "contextItem"; kind: "file"; path: string; label: string; ts: number }
   | { type: "contextItem"; kind: "attachment"; name: string; text: string; ts: number }
   | { type: "fileSuggestions"; items: { path: string; label: string }[]; ts: number }
+  | { type: "commandFinishedAndFeedback"; text: string; ts: number }
   | CommandUpdateMessage;
 
 type FileSnapshot = {
@@ -72,6 +73,30 @@ type AppliedChangeSet = {
   diff: string;
   snapshots: FileSnapshot[];
   createdAt: number;
+};
+
+type TaskStepStatus = "pending" | "in_progress" | "completed" | "failed";
+
+type AgentTaskStep = {
+  id: string;
+  title: string;
+  status: TaskStepStatus;
+  evidence?: string;
+};
+
+type AgentTaskState = {
+  id: string;
+  goal: string;
+  requestType: string;
+  targetRoot: string;
+  status: "active" | "completed" | "failed";
+  startedAt: number;
+  updatedAt: number;
+  steps: AgentTaskStep[];
+  filesChanged: string[];
+  commandsExecuted: { cmd: string; exitCode?: number; status: "success" | "error" | "canceled" }[];
+  verification: { command: string; passed: boolean; outputTail: string; ts: number }[];
+  errors: string[];
 };
 
 function buildSafegraphSystemPrompt(targetRoot: string) {
@@ -238,10 +263,31 @@ function workflowForRequestType(requestType: string) {
   }
 }
 
+function clampNumber(value: unknown, fallback: number, min: number, max: number) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function shouldUseFullRepositoryContext(text: string, taggedFiles: string[]) {
+  if (taggedFiles.includes("@Repository")) return true;
+  return /(architecture|kiến trúc|refactor|review|audit|codebase|repository|repo|toàn bộ|whole project|cross.?file|dependency|call graph|symbol|context|ngữ cảnh)/i.test(
+    text
+  );
+}
+
+function shouldUseRepositoryContext(text: string, taggedFiles: string[]) {
+  if (shouldUseFullRepositoryContext(text, taggedFiles)) return true;
+  return /(fix|bug|error|traceback|failed|exception|diagnostic|build|test|implement|update|change|add|remove|sửa|lỗi|thêm|xoá|xóa|chạy|kiểm tra|token|memory|prompt)/i.test(
+    text
+  );
+}
+
 function buildTaskPrompt(args: {
   targetRoot: string;
   requestType: string;
   context: string;
+  taskState: string;
   webResearch: string;
   conversation: string;
   tagged: string[];
@@ -266,6 +312,7 @@ Target root: ${args.targetRoot || "(none)"}
 
 WORKFLOW PLAYBOOK
 ${workflow}
+${args.taskState ? `\nCURRENT TASK STATE\n${args.taskState}\n` : ""}
 
 LATEST USER REQUEST
 ${args.question}
@@ -295,6 +342,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private currentAbort?: AbortController;
   private autoRunDoneFor = new Set<string>();
   private history: { role: "user" | "assistant"; text: string }[] = [];
+  private conversationSummary = "";
+  private activeTaskState?: AgentTaskState;
   private cmdRunner: CommandRunner;
   private mcpManager: McpClientManager;
   private currentTargetRoot?: vscode.Uri;
@@ -306,6 +355,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ) {
     this.cmdRunner = new CommandRunner(output);
     this.mcpManager = new McpClientManager(output);
+    this.conversationSummary = String(this.context.globalState.get("safegraph.conversationSummary") || "");
+    this.activeTaskState = this.loadPersistedTaskState();
   }
 
   resolveWebviewView(
@@ -352,6 +403,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       if (msg.type === "clearChat") {
         this.history = [];
+        this.conversationSummary = "";
+        this.activeTaskState = undefined;
+        await this.context.globalState.update("safegraph.conversationSummary", "");
+        await this.context.globalState.update("safegraph.activeTaskState", undefined);
         this.currentAbort?.abort();
         this.output.appendLine("[safegraph-ai] chat history cleared");
         return;
@@ -454,9 +509,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       if (msg.type === "runCommand") {
         const cwd = this.currentTargetRoot?.fsPath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
-        this.cmdRunner.runAndWait(msg.id, msg.cmd, cwd, (m) => webviewView.webview.postMessage(m)).then(result => {
-           const feedback = `[Command execution finished]\nCommand: ${msg.cmd}\nExit code: ${result.exitCode}\nOutput:\n${result.output.slice(-12000)}\n\nPlease continue analyzing or processing based on this result.`;
-           webviewView.webview.postMessage({ type: "commandFinishedAndFeedback", text: feedback });
+        this.cmdRunner.runAndWait(msg.id, msg.cmd, cwd, (m) => webviewView.webview.postMessage(m)).then(async result => {
+           await this.recordTaskCommandResult(result);
+           const feedback = [
+             "[Command execution finished]",
+             "This is the result of a command that was proposed earlier and approved manually.",
+             "Continue the original task using this execution result. If the command failed, diagnose the root cause and provide the next repair diff or safe verification command.",
+             "",
+             `Command: ${msg.cmd}`,
+             `Exit code: ${result.exitCode ?? "(unknown)"}`,
+             "Output:",
+             result.output.slice(-12000) || "(no output)"
+           ].join("\n");
+           webviewView.webview.postMessage({
+             type: "commandFinishedAndFeedback",
+             text: feedback,
+             ts: Date.now()
+           } satisfies ExtensionToWebviewMessage);
         });
         return;
       }
@@ -499,105 +568,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             cfg.get("modelId") ||
               "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
           );
+          const taggedFilesForRequest = msg.taggedFiles || [];
+          const includeRepositoryContext = shouldUseRepositoryContext(msg.text, taggedFilesForRequest);
+          const fullRepositoryContext = shouldUseFullRepositoryContext(msg.text, taggedFilesForRequest);
+          const contextMaxChars = fullRepositoryContext ? 22000 : includeRepositoryContext ? 16000 : 10000;
 
           const ctx = await buildContext({
-            maxChars: 24000,
-            maxFiles: 80,
-            includeFiles: (msg.taggedFiles || []).filter((p) => p !== "@Repository"),
+            maxChars: contextMaxChars,
+            maxFiles: fullRepositoryContext ? 80 : 50,
+            includeFiles: taggedFilesForRequest.filter((p) => p !== "@Repository"),
             query: msg.text,
             storageUri: this.context.globalStorageUri,
-            includeRepository: true,
+            includeRepository: includeRepositoryContext,
             targetRoot
           });
           const webResearch = await this.buildWebResearchBundle(msg.text);
           const maskedCtx = maskSensitive(ctx);
           const maskedWebResearch = maskSensitive(webResearch);
           const maskedQuestion = maskSensitive(msg.text);
-          const conversation = this.history
-            .slice(-8)
-            .map((h) => `${h.role === "user" ? "User" : "Safegraph AI"}: ${maskSensitive(h.text).slice(0, 2000)}`)
-            .join("\n\n");
+          const requestType = inferRequestType(maskedQuestion);
+          const taskState = this.getOrCreateTaskState(maskedQuestion, requestType, targetRoot?.fsPath || "");
+          const conversation = this.buildConversationMemory(maskedQuestion);
+          const taskStatePrompt = this.formatTaskStateForPrompt(taskState);
           const tagged = (msg.taggedFiles || []).map((p) => maskSensitive(p));
           const atts = (msg.attachments || [])
-            .slice(0, 8)
+            .slice(0, 6)
             .map((a) => ({
               name: maskSensitive(String(a.name || "file")),
-              text: maskSensitive(String(a.text || "")).slice(0, 50_000)
+              text: maskSensitive(this.compactAttachmentForPrompt(String(a.text || "")))
             }))
             .filter((a) => a.text.trim().length > 0);
-
-          const prompt =
-            `You are Safegraph AI, an autonomous senior software engineer inside VS Code with 20 years of production experience. You provide expert help with:
-- Code analysis, refactoring, and best practices
-- Bug fixing and debugging
-- Feature implementation and architecture design
-- Testing, documentation, and code quality
-- Terminal commands and build systems
-- Product requirement analysis, UX design, UI mockups, and implementation-ready frontend design
-
-AUTONOMOUS TASK LOOP INSTRUCTIONS:
-- You are running in an AUTONOMOUS TASK LOOP. 
-- You can write code blocks (\`\`\`diff) or terminal commands (\`\`\`sh). The system will automatically apply the diffs and run the commands, then feed the output back to you in the next message.
-- If you need to see the output of a command or the result of a file change before continuing, end your response with [CONTINUE].
-- If you have fully achieved the user's goal and there is nothing else to do, end your response with [DONE]. When doing so, provide a clear, concise summary of all the actions you took and the files you modified during this autonomous session.
-- DO NOT say [DONE] if tests are failing or you haven't verified the fix.
-- Mandatory task protocol:
-  1. Plan: before any diff or command, state a short concrete plan with target files/folders and verification approach.
-  2. Actions: every response that changes files or proposes commands must state what action is being taken and why.
-  3. Verification: after execution results, explain what passed/failed and either repair the issue or give the next verification step.
-  4. Final Summary: the final [DONE] response must include files changed, commands run, verification result, and any remaining risk.
-- Never output only a diff block or only a shell command. Include the relevant Plan/Actions/Verification/Final Summary text around it.
-- The target root for this task is: ${maskSensitive(targetRoot?.fsPath || "(none)")}.
-- If the user tagged a folder, treat that folder as the working directory and write new files there unless the user explicitly names another path.
-- All diff paths must be relative to the target root, not to an older workspace root.
-- Before creating or editing files, verify the current directory with \`pwd\` when path ambiguity exists.
-- If the user provides one or more URLs and asks to research, use the WEB RESEARCH BUNDLE first. It contains the seed page plus related same-section documentation pages discovered from links/tabs/sidebar navigation.
-- If the WEB RESEARCH BUNDLE contains fetched pages, do not answer with only diagnostic shell commands such as curl/grep. Answer directly from the bundle or create/update the requested document.
-- If the WEB RESEARCH BUNDLE is missing, incomplete, or clearly too shallow, fetch additional pages with safe read-only commands such as \`curl -L <url>\` or a small Python urllib command before writing the final report.
-- For documentation sites with tabs/sidebar links, synthesize across all fetched related pages. Do not summarize only the seed URL when related pages are available.
-- Cite the source URLs used in the generated document.
-
-RESPONSE GUIDELINES:
-1. Reply in the same language as the user. If the user writes Vietnamese, use clear Vietnamese.
-2. Act like a pragmatic staff engineer: diagnose root causes, choose a maintainable fix, consider edge cases, and avoid fragile quick hacks unless the user clearly needs a temporary workaround.
-3. Own the problem end-to-end. Do not stop at suggestions when a code change can solve it. Create/update files, propose safe verification commands, and make the project runnable.
-4. Ask questions only when the decision is high-risk, security-sensitive, destructive, costly, or materially changes product direction. For ordinary missing details, make a conservative assumption and proceed.
-5. Write for a normal developer using VS Code, not for a framework expert. Avoid academic headings like "Issue Analysis" unless the user asks for a report.
-6. Start with the fix or next action. Then give a short reason only if it helps the user make the right choice.
-7. Prefer concrete steps: what file to open, what command to run, what URL to visit, or what button to click.
-8. When explaining an error, use this shape: "Lỗi là...", "Cách sửa...", "Vì sao...". Keep each part short.
-9. For code changes, ALWAYS provide a short user-facing summary first, then a complete unified diff in a fenced code block marked 'diff'. Safegraph will validate and apply it automatically.
-10. For terminal commands, put ONLY exact commands (one per line) in a fenced code block marked 'sh'. Safegraph will run safe commands automatically and ask only for sensitive commands.
-11. Use the file paths relative to workspace root.
-12. For new files: use --- /dev/null and +++ b/<path>.
-13. For deleted files: use --- a/<path> and +++ /dev/null.
-14. Analyze the user's real goal before coding. If details are missing, make conservative product/design assumptions and proceed; ask only when a wrong assumption could cause data loss, security risk, cost, or a materially different product.
-15. If the user only pasted an error, traceback, terminal output, failing test, malformed diff, or code snippet without saying what they want, infer the request as: diagnose it, locate the relevant file(s), fix the underlying issue, and validate the fix. Do not ask "what do you want me to do?" for pasted bugs.
-16. If the user pasted only code, infer whether it is incomplete, duplicated, malformed, or should replace the active file. Use active file/workspace context to decide. Fix syntax/integration issues instead of echoing the code back.
-17. For UI/product tasks, act as a product designer and frontend engineer: infer target users, main workflow, information hierarchy, empty/loading/error states, responsive behavior, accessibility, and visual style before implementation.
-18. If the user asks for a mockup, design, website, dashboard, app screen, or UI improvement, create an implementable mockup in code. Prefer editing/creating real project files such as HTML/CSS/JS/React components. If the repo has no app structure, create a minimal runnable mockup. Do not mix rendered page text and CSS; CSS must live in a stylesheet, a valid <style> block, or the framework's styling mechanism.
-19. For frontend design, use existing project conventions first. Build the actual usable screen, not a marketing explanation. Avoid generic one-color themes, oversized decorative cards, and visible text explaining how to use the UI.
-20. Make UI complete enough to inspect: realistic labels/data, responsive layout, clear primary actions, hover/focus states, error/empty/loading states where relevant.
-21. Before giving final text, make the code complete enough to run. Include verification commands after the diff when useful.
-22. Do not return a bare diff. Always explain what changed, which files are affected, and what the user should verify.
-23. Use these exact short section labels when appropriate: Plan, Actions, Verification, Final Summary.
-24. Do not dump long explanations when a simple action is enough.
-
-CONTEXT:
-${maskedCtx}
-${maskedWebResearch ? "\nWEB RESEARCH BUNDLE:\n" + maskedWebResearch : ""}
-${conversation ? "\nRecent conversation:\n" + conversation : ""}
-${tagged.length ? "\nTagged files (@):\n" + tagged.join("\n") : ""}
-${atts.length ? "\nAttachments:\n" + atts.map((a) => `[${a.name}] ${a.text}`).join("\n\n") : ""}
-
-User query:
-${maskedQuestion}`;
 
           const systemPrompt = buildSafegraphSystemPrompt(maskSensitive(targetRoot?.fsPath || ""));
           const taskPrompt = buildTaskPrompt({
             targetRoot: maskSensitive(targetRoot?.fsPath || ""),
-            requestType: inferRequestType(maskedQuestion),
+            requestType,
             context: maskedCtx,
+            taskState: taskStatePrompt,
             webResearch: maskedWebResearch,
             conversation,
             tagged,
@@ -724,6 +731,7 @@ ${maskedQuestion}`;
                       );
                       if (appliedDiff.trim()) {
                         streamedAppliedDiffs.push(appliedDiff);
+                        await this.recordTaskDiffApplied(appliedDiff);
                         webviewView.webview.postMessage({
                           type: "autoAppliedChangeSet",
                           id: changeSetId,
@@ -736,6 +744,7 @@ ${maskedQuestion}`;
                     } catch (error) {
                       streamExecutionFailed = true;
                       streamLoopFeedback += `Failed to live-apply streamed diff: ${String(error)}\n`;
+                      await this.recordTaskError(`Failed to live-apply diff: ${String(error)}`);
                     }
                   }
 
@@ -883,6 +892,7 @@ ${maskedQuestion}`;
                 );
                 if (appliedDiff.trim()) {
                   appliedDiffsForVerification.push(appliedDiff);
+                  await this.recordTaskDiffApplied(appliedDiff);
                   webviewView.webview.postMessage({
                     type: "autoAppliedChangeSet",
                     id: changeSetId,
@@ -896,6 +906,7 @@ ${maskedQuestion}`;
                   : "Diff was already present or empty; no workspace changes were applied.\n";
               } catch (e) {
                 loopFeedback += "Failed to apply diff: " + String(e) + "\n";
+                await this.recordTaskError(`Failed to apply diff: ${String(e)}`);
                 executionFailed = true;
               }
             }
@@ -926,6 +937,7 @@ ${maskedQuestion}`;
                 if (this.currentAbort?.signal.aborted) break;
                 const result = await this.cmdRunner.runAndWait(item.id, item.cmd, cwd, (m) => webviewView.webview.postMessage(m));
                 loopFeedback += `Command: ${item.cmd}\nExit code: ${result.exitCode}\nOutput:\n${result.output.slice(-12000)}\n\n`;
+                await this.recordTaskCommandResult(result);
                 if (result.status !== "success" || result.exitCode !== 0) {
                   executionFailed = true;
                 }
@@ -933,6 +945,7 @@ ${maskedQuestion}`;
             }
 
             if (combined.includes("[DONE]") && !executionFailed) {
+              await this.markTaskCompleted(totalAcc || combined);
               isDone = true;
               break;
             }
@@ -961,9 +974,9 @@ ${maskedQuestion}`;
 
           this.history.push({ role: "user", text: msg.text });
           this.history.push({ role: "assistant", text: totalAcc });
-          if (this.history.length > 16) {
-            this.history = this.history.slice(-16);
-          }
+          this.conversationSummary = this.updateConversationSummary(this.conversationSummary, msg.text, totalAcc);
+          await this.context.globalState.update("safegraph.conversationSummary", this.conversationSummary);
+          if (this.history.length > 10) this.history = this.history.slice(-10);
         } catch (e) {
           if (String(e instanceof Error ? e.message : e).toLowerCase().includes("aborted")) {
             this.output.appendLine("[safegraph-ai] request aborted by user");
@@ -979,6 +992,362 @@ ${maskedQuestion}`;
         }
       }
     });
+  }
+
+  private buildConversationMemory(latestQuestion: string) {
+    const parts: string[] = [];
+    const summary = this.conversationSummary.trim();
+    if (summary) {
+      parts.push(`LONG-LIVED THREAD MEMORY\n${maskSensitive(summary).slice(0, 5000)}`);
+    }
+
+    const recent = this.selectRecentHistoryForPrompt(latestQuestion);
+    if (recent.length > 0) {
+      parts.push(
+        "RECENT RELEVANT TURNS, OLDEST TO NEWEST\n" +
+          recent
+            .map((h) => `${h.role === "user" ? "User" : "Safegraph AI"}: ${maskSensitive(this.compactHistoryText(h.text, h.role)).slice(0, 900)}`)
+            .join("\n\n")
+      );
+    }
+
+    return parts.join("\n\n");
+  }
+
+  private loadPersistedTaskState() {
+    const raw = this.context.globalState.get("safegraph.activeTaskState");
+    if (!raw || typeof raw !== "object") return undefined;
+    const task = raw as AgentTaskState;
+    if (!task.id || !task.goal || !Array.isArray(task.steps)) return undefined;
+    return task.status === "active" ? task : undefined;
+  }
+
+  private async persistTaskState() {
+    if (!this.activeTaskState) {
+      await this.context.globalState.update("safegraph.activeTaskState", undefined);
+      return;
+    }
+    await this.context.globalState.update("safegraph.activeTaskState", this.activeTaskState);
+  }
+
+  private getOrCreateTaskState(question: string, requestType: string, targetRoot: string) {
+    const canContinue =
+      this.activeTaskState?.status === "active" &&
+      (this.isCommandFeedback(question) || this.isLikelySameTask(question, this.activeTaskState));
+
+    if (!canContinue) {
+      this.activeTaskState = this.createTaskState(question, requestType, targetRoot);
+    } else if (this.activeTaskState) {
+      this.activeTaskState.updatedAt = Date.now();
+      this.activeTaskState.targetRoot = targetRoot || this.activeTaskState.targetRoot;
+      const current = this.activeTaskState.steps.find((step) => step.status === "in_progress");
+      if (!current) {
+        const next = this.activeTaskState.steps.find((step) => step.status === "pending");
+        if (next) next.status = "in_progress";
+      }
+    }
+
+    void this.persistTaskState();
+    return this.activeTaskState!;
+  }
+
+  private isCommandFeedback(text: string) {
+    return /^\[Command execution finished\]/i.test(String(text || "").trim());
+  }
+
+  private isLikelySameTask(question: string, task: AgentTaskState) {
+    const q = String(question || "").trim();
+    if (!q) return true;
+    if (/^(tiếp|continue|ok|đúng|làm đi|sửa tiếp|chạy tiếp|try again|fix it)/i.test(q)) return true;
+    const current = this.keywordSet(q);
+    const previous = this.keywordSet(`${task.goal}\n${task.filesChanged.join("\n")}\n${task.errors.join("\n")}`);
+    let overlap = 0;
+    for (const key of current) {
+      if (previous.has(key)) overlap += 1;
+    }
+    return overlap >= 2;
+  }
+
+  private createTaskState(question: string, requestType: string, targetRoot: string): AgentTaskState {
+    const now = Date.now();
+    const steps = this.initialTaskSteps(requestType).map((title, index) => ({
+      id: `step_${index + 1}`,
+      title,
+      status: index === 0 ? "in_progress" as TaskStepStatus : "pending" as TaskStepStatus
+    }));
+    return {
+      id: `task_${now}_${Math.random().toString(36).slice(2, 8)}`,
+      goal: question.slice(0, 500),
+      requestType,
+      targetRoot,
+      status: "active",
+      startedAt: now,
+      updatedAt: now,
+      steps,
+      filesChanged: [],
+      commandsExecuted: [],
+      verification: [],
+      errors: []
+    };
+  }
+
+  private initialTaskSteps(requestType: string) {
+    if (requestType === "bugfix/debug" || requestType === "frontend-data/static-asset-debug") {
+      return ["Reproduce or inspect the failure", "Find root cause", "Apply focused fix", "Run verification", "Summarize result and risk"];
+    }
+    if (requestType === "tdd/test-first") {
+      return ["Identify behavior and seam", "Add focused failing test", "Implement minimal fix", "Run tests", "Summarize result and risk"];
+    }
+    if (requestType === "architecture/refactor" || requestType === "review/refactor") {
+      return ["Inspect architecture and changed files", "Identify concrete risks", "Apply focused refactor if needed", "Run verification", "Summarize result and risk"];
+    }
+    if (requestType === "prototype" || requestType === "frontend/ui") {
+      return ["Identify target UI workflow", "Implement inspectable screen/state", "Check responsive/build behavior", "Summarize result and risk"];
+    }
+    return ["Understand request and context", "Apply focused changes if needed", "Run verification", "Summarize result and risk"];
+  }
+
+  private formatTaskStateForPrompt(task: AgentTaskState) {
+    const lines: string[] = [
+      `Task id: ${task.id}`,
+      `Goal: ${maskSensitive(task.goal)}`,
+      `Status: ${task.status}`,
+      `Request type: ${task.requestType}`,
+      `Target root: ${maskSensitive(task.targetRoot || "(none)")}`,
+      "Plan:"
+    ];
+    for (const step of task.steps) {
+      lines.push(`- [${step.status}] ${step.title}${step.evidence ? ` (${maskSensitive(step.evidence).slice(0, 220)})` : ""}`);
+    }
+    if (task.filesChanged.length) lines.push(`Files changed: ${task.filesChanged.slice(-12).join(", ")}`);
+    if (task.commandsExecuted.length) {
+      lines.push(
+        "Commands executed: " +
+          task.commandsExecuted
+            .slice(-6)
+            .map((item) => `${item.cmd} => ${item.status}${item.exitCode === undefined ? "" : ` (${item.exitCode})`}`)
+            .join("; ")
+      );
+    }
+    if (task.verification.length) {
+      lines.push(
+        "Verification: " +
+          task.verification
+            .slice(-4)
+            .map((item) => `${item.command} => ${item.passed ? "pass" : "fail"}`)
+            .join("; ")
+      );
+    }
+    if (task.errors.length) lines.push(`Open errors: ${task.errors.slice(-4).map((e) => maskSensitive(e).slice(0, 260)).join(" | ")}`);
+    lines.push("Use this state to continue the same task. Do not repeat completed work unless new evidence contradicts it.");
+    return lines.join("\n");
+  }
+
+  private advanceTaskStep(matcher: RegExp | string, status: TaskStepStatus, evidence?: string) {
+    const task = this.activeTaskState;
+    if (!task) return;
+    const step = task.steps.find((item) =>
+      typeof matcher === "string" ? item.title.toLowerCase().includes(matcher.toLowerCase()) : matcher.test(item.title)
+    );
+    if (step) {
+      step.status = status;
+      if (evidence) step.evidence = evidence;
+    }
+    if (status === "completed") {
+      for (const item of task.steps) {
+        if (item === step) break;
+        if (item.status === "in_progress") item.status = "completed";
+      }
+      const next = task.steps.find((item) => item.status === "pending");
+      if (next && !task.steps.some((item) => item.status === "in_progress")) next.status = "in_progress";
+    }
+    task.updatedAt = Date.now();
+  }
+
+  private async recordTaskDiffApplied(diff: string) {
+    const task = this.activeTaskState;
+    if (!task) return;
+    for (const file of this.extractChangedFilesFromDiff(diff)) {
+      if (!task.filesChanged.includes(file)) task.filesChanged.push(file);
+    }
+    this.advanceTaskStep(/apply|implement|refactor|screen|changes/i, "completed", this.summarizeAppliedDiff(diff));
+    await this.persistTaskState();
+  }
+
+  private async recordTaskCommandResult(result: CommandRunResult) {
+    const task = this.activeTaskState;
+    if (!task) return;
+    const status = result.status === "success" && (result.exitCode === undefined || result.exitCode === 0) ? "success" : result.status;
+    task.commandsExecuted.push({ cmd: result.cmd, exitCode: result.exitCode, status });
+    const looksLikeVerification = /\b(test|build|typecheck|lint|pytest|jest|tsc|py_compile|cargo test|go test)\b/i.test(result.cmd);
+    if (looksLikeVerification) {
+      const passed = status === "success";
+      task.verification.push({
+        command: result.cmd,
+        passed,
+        outputTail: result.output.slice(-1200),
+        ts: Date.now()
+      });
+      this.advanceTaskStep(/verify|test|check|responsive|build/i, passed ? "completed" : "failed", `${result.cmd} exit ${result.exitCode ?? "unknown"}`);
+      if (passed) task.errors = [];
+      else task.errors.push(`${result.cmd} failed: ${result.output.slice(-500)}`);
+    }
+    task.updatedAt = Date.now();
+    await this.persistTaskState();
+  }
+
+  private async recordTaskError(error: string) {
+    const task = this.activeTaskState;
+    if (!task) return;
+    task.errors.push(String(error).slice(0, 1000));
+    const current = task.steps.find((step) => step.status === "in_progress");
+    if (current) {
+      current.status = "failed";
+      current.evidence = String(error).slice(0, 260);
+    }
+    task.updatedAt = Date.now();
+    await this.persistTaskState();
+  }
+
+  private async markTaskCompleted(finalText: string) {
+    const task = this.activeTaskState;
+    if (!task) return;
+    task.status = "completed";
+    for (const step of task.steps) {
+      if (step.status === "pending" || step.status === "in_progress") step.status = "completed";
+    }
+    if (finalText.trim()) {
+      const summary = this.compactHistoryText(finalText, "assistant").slice(0, 500);
+      const finalStep = task.steps[task.steps.length - 1];
+      if (finalStep) finalStep.evidence = summary;
+    }
+    task.updatedAt = Date.now();
+    await this.persistTaskState();
+  }
+
+  private selectRecentHistoryForPrompt(latestQuestion: string) {
+    const recent = this.history.slice(-10);
+    if (recent.length <= 4) return recent;
+
+    const latestKeywords = this.keywordSet(latestQuestion);
+    const scored = recent.map((item, index) => {
+      const keywords = this.keywordSet(item.text);
+      let overlap = 0;
+      for (const key of keywords) {
+        if (latestKeywords.has(key)) overlap += 1;
+      }
+      const recency = index / Math.max(1, recent.length - 1);
+      return { item, index, score: overlap * 3 + recency };
+    });
+
+    const selected = new Set<number>();
+    for (const item of scored.slice(-4)) selected.add(item.index);
+    for (const item of scored.sort((a, b) => b.score - a.score).slice(0, 4)) selected.add(item.index);
+
+    return Array.from(selected)
+      .sort((a, b) => a - b)
+      .map((index) => recent[index]);
+  }
+
+  private keywordSet(text: string) {
+    const words = String(text || "")
+      .toLowerCase()
+      .match(/[a-z0-9_./-]{3,}|[\p{L}\p{N}_./-]{3,}/gu) || [];
+    const stop = new Set([
+      "the", "and", "for", "that", "this", "with", "from", "you", "your", "safegraph",
+      "user", "file", "code", "hãy", "giúp", "cho", "của", "với", "này", "mình", "bạn"
+    ]);
+    return new Set(words.filter((word) => !stop.has(word)).slice(0, 80));
+  }
+
+  private compactHistoryText(text: string, role: "user" | "assistant") {
+    let compact = stripDiffBlocksForLiveApply(String(text || ""));
+    compact = compact.replace(/```[\s\S]*?```/g, (block) => {
+      const firstLine = block.split(/\r?\n/)[0] || "code";
+      return `[${firstLine.replace(/`/g, "").trim() || "code"} block omitted from memory]`;
+    });
+    compact = compact
+      .replace(/\[DONE\]|\[CONTINUE\]/g, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+    const max = role === "assistant" ? 900 : 700;
+    if (compact.length <= max) return compact;
+    return `${compact.slice(0, Math.floor(max * 0.65)).trim()}\n[...memory compacted...]\n${compact.slice(-Math.floor(max * 0.25)).trim()}`;
+  }
+
+  private compactAttachmentForPrompt(text: string) {
+    let compact = String(text || "");
+    if (!compact.trim()) return "";
+
+    compact = compact.replace(/\r\n/g, "\n");
+    const maxChars = 12_000;
+    if (compact.length <= maxChars) return compact;
+
+    const head = compact.slice(0, Math.floor(maxChars * 0.62)).trimEnd();
+    const tail = compact.slice(-Math.floor(maxChars * 0.28)).trimStart();
+    return `${head}\n\n[...attachment middle truncated by Safegraph AI to reduce token use...]\n\n${tail}`;
+  }
+
+  private updateConversationSummary(previous: string, userText: string, assistantText: string) {
+    const bullets = this.memoryBulletsFromTurn(userText, assistantText);
+    const combined = [previous.trim(), bullets].filter(Boolean).join("\n");
+    const lines = combined
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const deduped: string[] = [];
+    const seen = new Set<string>();
+    for (const line of lines) {
+      const key = line.toLowerCase().replace(/\s+/g, " ").slice(0, 180);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(line.startsWith("- ") ? line : `- ${line}`);
+    }
+
+    const kept = deduped.slice(-24);
+    let summary = kept.join("\n");
+    if (summary.length > 6000) summary = summary.slice(-6000).replace(/^[^\n]*\n?/, "");
+    return summary;
+  }
+
+  private memoryBulletsFromTurn(userText: string, assistantText: string) {
+    const user = maskSensitive(String(userText || "").trim()).replace(/\s+/g, " ");
+    const assistant = maskSensitive(this.compactHistoryText(assistantText, "assistant"));
+    const bullets: string[] = [];
+
+    if (user) bullets.push(`- User goal: ${user.slice(0, 260)}`);
+
+    const changedFiles = Array.from(
+      new Set(
+        [...assistant.matchAll(/\b(?:[\w.-]+\/)+[\w.-]+\.(?:ts|tsx|js|jsx|py|css|html|json|md|yml|yaml|toml)\b/g)]
+          .map((match) => match[0])
+          .slice(0, 10)
+      )
+    );
+    if (changedFiles.length) bullets.push(`- Files discussed/changed: ${changedFiles.join(", ")}`);
+
+    const commandLines = [...assistant.matchAll(/^Command:\s*(.+)$/gim)].map((match) => match[1].trim()).slice(0, 6);
+    if (commandLines.length) bullets.push(`- Commands/verifications: ${commandLines.join("; ")}`);
+
+    const finalSummaryMatch = assistant.match(/Final Summary[:\n]+([\s\S]{0,900})/i);
+    if (finalSummaryMatch?.[1]) {
+      const summary = finalSummaryMatch[1]
+        .replace(/\[DONE\]|\[CONTINUE\]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (summary) bullets.push(`- Result: ${summary.slice(0, 420)}`);
+    } else {
+      const lines = assistant
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => /pass|fail|đã|sửa|thêm|changed|updated|created|fixed|verified|build|test/i.test(line))
+        .slice(-3);
+      if (lines.length) bullets.push(`- Result: ${lines.join(" ").slice(0, 420)}`);
+    }
+
+    return bullets.join("\n");
   }
 
   private async loadApiKey() {
@@ -1187,9 +1556,10 @@ ${maskedQuestion}`;
 
     const parts: string[] = [];
     const visited = new Set<string>();
-    const maxPagesPerSeed = 12;
-    const maxCharsPerPage = 9000;
-    const maxTotalChars = 60_000;
+    const explicitResearch = /(research|docs|documentation|source|cite|tài liệu|nguồn|tra cứu|tham khảo)/i.test(userText);
+    const maxPagesPerSeed = explicitResearch ? 8 : 4;
+    const maxCharsPerPage = explicitResearch ? 6500 : 3500;
+    const maxTotalChars = explicitResearch ? 32_000 : 14_000;
 
     for (const seed of urls) {
       try {
