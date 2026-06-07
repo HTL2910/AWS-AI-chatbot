@@ -2,7 +2,7 @@
 
 Safegraph AI is a VS Code coding agent extension built for Bedrock-backed autonomous development workflows. It combines sidebar chat, repository context, live diff application, terminal verification, task memory, and evidence reporting inside the editor.
 
-Current release: `v0.13.0`
+Current release: `v0.14.0`
 
 ## What It Does
 
@@ -21,7 +21,7 @@ Current release: `v0.13.0`
 
 ## Current AI Capabilities
 
-Safegraph AI v0.13.0 is no longer just a chat panel. It now behaves more like a task-oriented coding agent:
+Safegraph AI v0.14.0 is no longer just a chat panel. It now behaves more like a task-oriented coding agent:
 
 - **Task planner state**: tracks goal, plan steps, files changed, commands executed, verification pass/fail, and open errors.
 - **Rolling memory**: compresses previous turns into stable memory so the model can remember decisions without resending large chat history.
@@ -32,7 +32,7 @@ Safegraph AI v0.13.0 is no longer just a chat panel. It now behaves more like a 
 
 ## What Is Better Now
 
-Compared with a basic AI chat extension, Safegraph AI v0.13.0 is stronger in these areas:
+Compared with a basic AI chat extension, Safegraph AI v0.14.0 is stronger in these areas:
 
 - **Continuity**: it remembers the active task and does not treat every follow-up as a new question.
 - **Verification discipline**: it records commands and pass/fail results instead of only suggesting tests.
@@ -57,12 +57,47 @@ Current limits:
 - The extension is not bundled yet, so the VSIX is large.
 - Semantic vector RAG is scaffolded but disabled by default; a turbovec sidecar/provider is planned rather than bundled as a native dependency today.
 
+## Cost And Security Notes
+
+Safegraph AI calls Amazon Bedrock. Usage can create AWS costs depending on the configured model, token volume, and request count.
+
+Recommended before serious use:
+
+- Enable AWS billing alerts or Cost and Usage monitoring.
+- Use the smallest model that is good enough for routine tasks.
+- Keep repository RAG limits conservative for large workspaces.
+- Review generated diffs before keeping applied changes.
+- Keep `safegraph.autoRun` at `safe` or `ask` for sensitive repositories.
+- Never place long-lived secrets in prompts, attachments, generated code, or terminal output.
+
+Safegraph AI does not expose a public ALB or external HTTP endpoint by default. Bedrock credentials are stored in VS Code SecretStorage or loaded from local `.env`. Local tools are workspace-scoped and command execution is filtered through Safegraph's command policy.
+
+## Comparison: Bedrock-Coder
+
+Safegraph AI is similar to [Bedrock-Coder](https://github.com/iankohhh/Bedrock-Coder) in that both are VS Code developer tools using Amazon Bedrock. The product direction is different:
+
+| Area | Bedrock-Coder | Safegraph AI |
+|---|---|---|
+| Primary workflow | Generate code from a description | Stateful coding agent loop |
+| Bedrock access | CloudFormation backend with ALB endpoint | Direct Bedrock Runtime integration from the extension |
+| Code output | User copies generated code into files | Safegraph validates and applies diffs to the workspace |
+| Context | Description plus optional image attachment | Active file, selection, tagged files, diagnostics, git state, repository RAG, task memory |
+| Agent memory | Not highlighted in README | Rolling memory plus persistent task state |
+| Verification | Not highlighted in README | Safe build/test/typecheck/lint runner with evidence report |
+| Security concern | Public ALB default warning in README | No public ALB by default; local secrets and command policy |
+
+What Safegraph learns from Bedrock-Coder:
+
+- Make AWS cost warnings visible.
+- Make security posture explicit.
+- Consider image/diagram input as a stronger product workflow later.
+
 ## Installation
 
 Install the packaged VSIX:
 
 ```sh
-code --install-extension safegraph-ai-0.13.0.vsix --force
+code --install-extension safegraph-ai-0.14.0.vsix --force
 ```
 
 Verify installation:
@@ -74,7 +109,7 @@ code --list-extensions --show-versions | grep safegraph
 Expected:
 
 ```text
-safegraph.safegraph-ai@0.13.0
+safegraph.safegraph-ai@0.14.0
 ```
 
 ## Configuration
@@ -100,6 +135,8 @@ Important settings:
 - `safegraph.repositoryRag.maxFiles`
 - `safegraph.repositoryRag.maxChunks`
 - `safegraph.repositoryRag.maxChars`
+- `safegraph.vectorRag.enabled`
+- `safegraph.vectorRag.provider`
 - `safegraph.agent.maxFixLoops`
 
 ## Using The Chat
@@ -131,7 +168,7 @@ Launch an Extension Development Host:
 1. Open `safegraph-ai-vscode` in VS Code.
 2. Press `F5`.
 
-## v0.13.0 Highlights
+## v0.14.0 Highlights
 
 - Persistent task planner state.
 - Rolling long-lived memory.
@@ -140,3 +177,5 @@ Launch an Extension Development Host:
 - Lightweight subagent notes.
 - Automatic evidence reports.
 - Reduced token usage across repository context, attachments, web research, and conversation history.
+- Optional vector RAG provider scaffold for future turbovec-style semantic retrieval.
+- Visible Safegraph task lane in the VS Code status bar.
