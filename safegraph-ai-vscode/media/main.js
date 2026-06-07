@@ -699,6 +699,7 @@ function renderEnhancedDiff(diffText) {
     body.className = "liveChangeBody";
 
     const summaries = summarizeUnifiedDiff(msg.diff || "");
+    const fileDiffs = splitUnifiedDiffByFile(msg.diff || "");
     const stats = document.createElement("div");
     stats.className = "liveChangeStats";
     const totals = summaries.reduce(
@@ -721,9 +722,50 @@ function renderEnhancedDiff(diffText) {
     });
     body.appendChild(stats);
 
+    const toolbar = document.createElement("div");
+    toolbar.className = "liveReviewToolbar";
+
+    const copyDiff = document.createElement("button");
+    copyDiff.type = "button";
+    copyDiff.className = "miniBtn";
+    copyDiff.textContent = "Copy diff";
+    copyDiff.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(String(msg.diff || ""));
+        copyDiff.textContent = "Copied";
+        setTimeout(() => (copyDiff.textContent = "Copy diff"), 1200);
+      } catch {
+        copyDiff.textContent = "Copy failed";
+        setTimeout(() => (copyDiff.textContent = "Copy diff"), 1200);
+      }
+    });
+
+    const expandAll = document.createElement("button");
+    expandAll.type = "button";
+    expandAll.className = "miniBtn";
+    expandAll.textContent = "Expand all";
+    expandAll.addEventListener("click", () => {
+      body.querySelectorAll(".liveFileReview").forEach((item) => {
+        item.open = true;
+      });
+    });
+
+    const collapseAll = document.createElement("button");
+    collapseAll.type = "button";
+    collapseAll.className = "miniBtn";
+    collapseAll.textContent = "Collapse all";
+    collapseAll.addEventListener("click", () => {
+      body.querySelectorAll(".liveFileReview").forEach((item) => {
+        item.open = false;
+      });
+    });
+
+    toolbar.append(copyDiff, expandAll, collapseAll);
+    body.appendChild(toolbar);
+
     const fileList = document.createElement("div");
     fileList.className = "liveFileList";
-    summaries.slice(0, 8).forEach((item) => {
+    summaries.slice(0, 12).forEach((item) => {
       const row = document.createElement("div");
       row.className = "liveFileRow";
 
@@ -739,42 +781,45 @@ function renderEnhancedDiff(diffText) {
       row.append(name, meta);
       fileList.appendChild(row);
     });
-    if (summaries.length > 8) {
+    if (summaries.length > 12) {
       const more = document.createElement("div");
       more.className = "liveFileMore";
-      more.textContent = `+${summaries.length - 8} more file${summaries.length - 8 === 1 ? "" : "s"}`;
+      more.textContent = `+${summaries.length - 12} more file${summaries.length - 12 === 1 ? "" : "s"}`;
       fileList.appendChild(more);
     }
     body.appendChild(fileList);
 
-    const details = document.createElement("details");
-    details.className = "liveDiffDetails";
-    const summary = document.createElement("summary");
-    summary.textContent = "Review diff";
-    details.appendChild(summary);
+    const reviewList = document.createElement("div");
+    reviewList.className = "liveReviewList";
+    for (const [index, fileDiff] of fileDiffs.entries()) {
+      const fileSummary = summaries[index] || summarizeUnifiedDiff(fileDiff)[0];
+      const item = document.createElement("details");
+      item.className = "liveFileReview";
+      item.open = index === 0 && fileDiffs.length <= 3;
 
-    const diffBody = document.createElement("div");
-    diffBody.className = "liveDiffBody";
-    for (const fileDiff of splitUnifiedDiffByFile(msg.diff || "")) {
-      const item = document.createElement("div");
-      item.className = "diffItem liveDiffItem";
+      const summary = document.createElement("summary");
+      summary.className = "liveFileReviewSummary";
 
-      const top = document.createElement("div");
-      top.className = "diffItemTop";
-      const label = document.createElement("div");
-      label.className = "diffFile";
+      const label = document.createElement("span");
+      label.className = "liveFileReviewName";
       label.textContent = extractFileLabel(fileDiff);
-      top.appendChild(label);
+
+      const badge = document.createElement("span");
+      badge.className = "liveFileReviewMeta";
+      const action = fileSummary?.isNew ? "Created" : fileSummary?.isDeleted ? "Deleted" : "Updated";
+      badge.textContent = `${action}  +${fileSummary?.added || 0} / -${fileSummary?.removed || 0}`;
+
+      summary.append(label, badge);
+      item.appendChild(summary);
 
       const pre = document.createElement("pre");
-      pre.className = "diff";
+      pre.className = "diff liveReviewDiff";
       pre.textContent = fileDiff;
 
-      item.append(top, pre);
-      diffBody.appendChild(item);
+      item.appendChild(pre);
+      reviewList.appendChild(item);
     }
-    details.appendChild(diffBody);
-    body.appendChild(details);
+    body.appendChild(reviewList);
 
     const footer = document.createElement("div");
     footer.className = "diffFooter";
@@ -791,7 +836,7 @@ function renderEnhancedDiff(diffText) {
     const keep = document.createElement("button");
     keep.type = "button";
     keep.className = "applyBtn";
-    keep.textContent = "Apply All";
+    keep.textContent = "Keep Changes";
     keep.addEventListener("click", () => {
       setLiveChangeBusy(container, "Keeping applied changes...");
       vscode.postMessage({ type: "keepChangeSet", id: msg.id });
