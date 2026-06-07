@@ -1,68 +1,114 @@
 # SafeGraph AI
 
-SafeGraph AI is a local AI coding assistant project centered on a Bedrock-powered VS Code coding agent. The main product is the `safegraph-ai-vscode/` extension; older Flask and Streamlit chatbot prototypes are kept for reference and testing.
+**A Bedrock-powered VS Code coding agent that understands your repository, applies real code changes, runs verification, remembers task state, and reports evidence.**
 
-Current extension version: `0.14.0`
+SafeGraph AI turns VS Code into a local-first AI coding workspace for developers who want more than a chatbot. It is designed for multi-step engineering work: understand the repo, plan the task, edit files, run safe checks, fix failures, and summarize what actually changed.
 
-## Current Status
+Current extension version: `0.15.0`
 
-- Main product: `safegraph-ai-vscode/`
-- Installed extension id: `safegraph.safegraph-ai`
-- Latest VSIX: `safegraph-ai-vscode/safegraph-ai-0.14.0.vsix`
-- Bedrock region default: `ap-southeast-1`
-- Authentication: VS Code SecretStorage, environment variables, or local `.env`
-- Primary workflow: stateful coding agent inside VS Code, not only one-shot code generation
+## Why SafeGraph AI
 
-## What SafeGraph AI Does
+Most AI coding assistants can answer questions. SafeGraph AI is built to **work inside the project**:
 
-- Understands workspace context: active file, selected text, tagged files, diagnostics, git state, and repository structure.
-- Builds compact repository context with local RAG and symbol-aware chunks.
-- Applies model-generated unified diffs directly to the workspace with validation and repair attempts.
-- Runs safe build/test/typecheck/lint commands and feeds output back into the agent loop.
-- Tracks task state across turns: goal, plan steps, changed files, commands, verification, open errors.
-- Uses rolling memory and task-level context cache to reduce repeated token usage.
-- Provides local tools for targeted inspection:
-  - `safegraph__read_file`
-  - `safegraph__search_files`
-  - `safegraph__list_files`
-  - `safegraph__run_verification`
-- Produces evidence reports with changed files, commands run, verification pass/fail, and remaining risk.
-- Shows current task status in the VS Code status bar.
+- It reads and searches workspace files.
+- It builds compact repository context instead of dumping huge prompts.
+- It applies validated diffs directly to the workspace.
+- It runs safe verification commands.
+- It remembers the task across follow-up turns.
+- It gives an evidence report so you know what changed and what risk remains.
 
-## What Is Better In v0.14.0
+The goal is practical: **faster project understanding, fewer wasted tokens, better code changes, and a tighter edit-test-fix loop.**
 
-Compared with a basic AI chat extension, SafeGraph AI now has:
+## AI Capability Overview
 
-- **Continuity**: follow-up turns continue the active task instead of starting over.
-- **Verification discipline**: commands and pass/fail results are recorded.
-- **Workspace grounding**: the agent reads/searches files, applies diffs, and verifies in the actual repo.
-- **Lower token waste**: context cache, rolling memory, attachment truncation, and selective repository RAG reduce repeated prompt payload.
-- **Evidence-first completion**: final output includes changed files, commands, verification, and remaining risk.
-- **Vector RAG roadmap**: optional provider scaffold for future turbovec-style semantic retrieval.
-- **Visible agent lane**: task progress appears in the VS Code status bar without exposing an unsafe eval bridge.
+| Capability | What SafeGraph AI Does | Current Level |
+|---|---|---|
+| Repository understanding | Uses active file, selection, tagged files, diagnostics, git state, file list, local RAG, and symbol-aware chunks | Strong |
+| Task continuity | Tracks goal, plan steps, changed files, commands, verification, and open errors across turns | Strong |
+| Token optimization | Uses rolling memory, context cache, selective RAG, attachment truncation, and compact web/docs bundles | Strong |
+| Code editing | Generates unified diffs, validates them, applies them to the workspace, and supports keep/discard review | Strong |
+| Verification loop | Runs safe build/test/typecheck/lint commands and feeds output back into the agent | Strong |
+| Tool use | Local tools: `read_file`, `search_files`, `list_files`, `run_verification` | Strong |
+| Diff review UI | Live applied changes, per-file review sections, copy diff, expand/collapse, keep/discard controls | Improving |
+| Evidence reporting | Final task output includes files changed, commands run, pass/fail status, and remaining risk | Strong |
+| Security posture | SecretStorage, local `.env`, workspace-scoped tools, command policy, no public ALB by default | Strong |
+| Semantic vector RAG | Provider scaffold exists for future turbovec-style retrieval | Planned |
+| Browser automation | Not included yet | Planned |
+| True multi-agent workers | Lightweight deterministic notes today; separate model workers not included yet | Planned |
 
-## Repository Layout
+## What It Can Do Today
+
+- **Debug failing code**: inspect logs, find likely files, patch code, run verification, repair failures.
+- **Implement features**: use repository context, update files, and verify the result.
+- **Review code changes**: summarize files changed, risk, tests, and remaining issues.
+- **Refactor safely**: keep edits scoped, preserve existing architecture, and run checks.
+- **Understand a project faster**: combine active context, local RAG, task memory, and targeted search.
+- **Reduce prompt waste**: avoid repeatedly sending the same repository context during a task.
+
+## Key Features
+
+### Stateful Coding Agent
+
+SafeGraph AI keeps an active task state:
+
+- goal
+- request type
+- plan steps
+- current status
+- files changed
+- commands executed
+- verification results
+- open errors
+
+This lets follow-up prompts like "fix tiếp", "run again", or "ok làm tiếp" continue the same task instead of starting over.
+
+### Repository-Aware Context
+
+SafeGraph AI uses local repository context and symbol-aware chunks to ground responses in the actual codebase. It also includes a context cache per task so repeated loops do not rebuild and resend the same context unnecessarily.
+
+### Local Agent Tools
+
+The agent can use local, workspace-scoped tools:
 
 ```text
-.
-├── safegraph-ai-vscode/       # Main VS Code extension source and packaged VSIX builds
-├── chatbot-web/               # Flask web chatbot prototype using Bedrock API keys
-├── src/                       # Streamlit app and credential setup scripts
-├── docs/                      # Setup, credential, and usage notes
-├── config/                    # Python requirements and env examples
-├── examples/                  # Bedrock usage examples
-└── README.md                  # This file
+safegraph__read_file
+safegraph__search_files
+safegraph__list_files
+safegraph__run_verification
 ```
 
-## Install The VS Code Extension
+These tools help the model inspect targeted evidence instead of guessing from broad context.
 
-Install the latest packaged build:
+### Live Diff Application And Review
+
+SafeGraph AI can apply diffs live, then show a review surface:
+
+- file-level change list
+- created/updated/deleted status
+- added/removed line counts
+- expandable per-file diff
+- copy full diff
+- keep changes
+- discard changes
+
+### Verification And Evidence
+
+SafeGraph AI records commands and verification results. A completed task includes an evidence report:
+
+- files changed
+- commands run
+- verification pass/fail
+- remaining risk
+
+## Install
+
+Install the latest VSIX:
 
 ```bash
-code --install-extension safegraph-ai-vscode/safegraph-ai-0.14.0.vsix --force
+code --install-extension safegraph-ai-vscode/safegraph-ai-0.15.0.vsix --force
 ```
 
-Verify installation:
+Verify:
 
 ```bash
 code --list-extensions --show-versions | grep safegraph
@@ -71,10 +117,10 @@ code --list-extensions --show-versions | grep safegraph
 Expected:
 
 ```text
-safegraph.safegraph-ai@0.14.0
+safegraph.safegraph-ai@0.15.0
 ```
 
-## Configure Bedrock Credentials
+## Configure Bedrock
 
 Set the Bedrock API key from VS Code:
 
@@ -91,7 +137,66 @@ ARN="arn:aws:bedrock:ap-southeast-1:ACCOUNT_ID:application-inference-profile/PRO
 
 Do not commit real `.env` files or real API keys.
 
-## Cost And Security Notes
+## Important Settings
+
+| Setting | Purpose |
+|---|---|
+| `safegraph.region` | AWS Bedrock region |
+| `safegraph.modelId` | Bedrock model id or inference profile ARN |
+| `safegraph.autoRun` | Controls command auto-run: `off`, `safe`, `ask` |
+| `safegraph.repositoryRag.enabled` | Enables local repository RAG |
+| `safegraph.repositoryRag.maxFiles` | Max files indexed for repository RAG |
+| `safegraph.repositoryRag.maxChunks` | Max chunks included in prompt |
+| `safegraph.repositoryRag.maxChars` | Max RAG context characters |
+| `safegraph.vectorRag.enabled` | Future semantic vector RAG toggle |
+| `safegraph.vectorRag.provider` | Future provider such as `turbovec-sidecar` |
+| `safegraph.agent.maxFixLoops` | Max autonomous repair loops |
+
+## Repository Layout
+
+```text
+.
+├── safegraph-ai-vscode/       # Main VS Code extension source and packaged VSIX builds
+├── chatbot-web/               # Flask web chatbot prototype using Bedrock API keys
+├── src/                       # Streamlit app and credential setup scripts
+├── docs/                      # Setup, credential, and usage notes
+├── config/                    # Python requirements and env examples
+├── examples/                  # Bedrock usage examples
+└── README.md                  # This file
+```
+
+## SEO Keywords
+
+SafeGraph AI is relevant for:
+
+- AI coding agent
+- VS Code AI extension
+- Amazon Bedrock coding assistant
+- Bedrock Claude VS Code extension
+- local repository RAG
+- AI code review
+- AI pair programmer
+- autonomous coding agent
+- AI developer tooling
+- token-efficient coding assistant
+- repository-aware AI assistant
+- VS Code agent workflow
+
+## Comparison: SafeGraph AI vs Bedrock-Coder
+
+SafeGraph AI is similar to [Bedrock-Coder](https://github.com/iankohhh/Bedrock-Coder) because both use Amazon Bedrock for developer workflows. The difference is product depth.
+
+| Area | Bedrock-Coder | SafeGraph AI |
+|---|---|---|
+| Primary workflow | Generate code from a description | Stateful coding agent loop |
+| Bedrock access | CloudFormation backend with ALB endpoint | Direct Bedrock Runtime integration from extension |
+| Code output | User copies generated code into files | SafeGraph validates and applies diffs |
+| Context | Description plus optional image attachment | Active file, selection, tagged files, diagnostics, git state, repository RAG, task memory |
+| Memory | Not highlighted in README | Rolling memory plus persistent task state |
+| Verification | Not highlighted in README | Safe build/test/typecheck/lint runner with evidence report |
+| Security posture | Public ALB default warning | No public ALB by default; local secrets and command policy |
+
+## Cost And Security
 
 SafeGraph AI calls Amazon Bedrock. Usage can create AWS costs depending on model, token volume, and request count.
 
@@ -105,21 +210,28 @@ Recommended:
 
 SafeGraph AI does not expose a public ALB or external HTTP endpoint by default. Credentials are stored in VS Code SecretStorage or loaded locally. Local tools are workspace-scoped and terminal execution is filtered through command policy.
 
-## Comparison: Bedrock-Coder
+## Current Limits
 
-SafeGraph AI is similar to [Bedrock-Coder](https://github.com/iankohhh/Bedrock-Coder) because both are VS Code developer tools using Amazon Bedrock. The direction is different:
+SafeGraph AI is not claiming to match the largest commercial agent IDEs yet.
 
-| Area | Bedrock-Coder | SafeGraph AI |
-|---|---|---|
-| Primary workflow | Generate code from a description | Stateful coding agent loop |
-| Bedrock access | CloudFormation backend with ALB endpoint | Direct Bedrock Runtime integration from the extension |
-| Code output | User copies generated code into files | SafeGraph validates and applies diffs |
-| Context | Description plus optional image attachment | Active file, selection, tagged files, diagnostics, git state, repository RAG, task memory |
-| Memory | Not highlighted in README | Rolling memory plus persistent task state |
-| Verification | Not highlighted in README | Safe build/test/typecheck/lint runner with evidence report |
-| Security posture | Public ALB default warning | No public ALB by default; local secrets and command policy |
+Current limits:
 
-## Develop The Extension
+- Model quality depends on the configured Bedrock model.
+- Browser automation is not included yet.
+- Vector RAG is scaffolded but not fully implemented.
+- Subagent notes are deterministic today, not separate model workers.
+- The extension is not bundled yet, so the VSIX is still large.
+
+## Roadmap
+
+- Optional turbovec-style semantic vector RAG sidecar.
+- Stronger image/diagram input workflow.
+- Browser/app testing support.
+- More advanced IDE-grade diff review.
+- True multi-agent workers for reviewer, test-fixer, and context-scout.
+- Extension bundling to reduce VSIX size.
+
+## Develop
 
 ```bash
 cd safegraph-ai-vscode
@@ -128,36 +240,11 @@ npm run typecheck
 npm run build
 ```
 
-Open `safegraph-ai-vscode/` in VS Code and press `F5` to launch an Extension Development Host.
-
 Package a new VSIX:
 
 ```bash
 cd safegraph-ai-vscode
 npm run package
-```
-
-## Prototype Apps
-
-The older Flask prototype lives in `chatbot-web/`:
-
-```bash
-cd chatbot-web
-pip install -r requirements.txt
-python app.py
-```
-
-Default URL:
-
-```text
-http://localhost:5001
-```
-
-The Streamlit prototype is under `src/`:
-
-```bash
-pip install -r config/requirements.txt
-streamlit run src/app.py
 ```
 
 ## Useful Docs
