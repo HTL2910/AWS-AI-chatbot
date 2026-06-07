@@ -1,10 +1,38 @@
 .env
 .env.*
-node_modules/**
-!node_modules/
-!node_modules/typescript/**
+*.vsix
+
+# Build/test artifacts
+coverage/**
+scratch/**
+webview-ui/node_modules/**
+webview-ui/src/**
+webview-ui/public/**
+webview-ui/*.json
+webview-ui/*.js
+webview-ui/*.ts
+webview-ui/*.html
+webview-ui/README.md
+
+# Source and dev-only tooling. Runtime uses compiled out/ files.
 src/**
 scripts/**
-*.vsix
-package-lock.json
 tsconfig.json
+jest.config.js
+package-lock.json
+
+# Historical planning docs not needed at extension runtime.
+AUTONOMOUS_DELIVERY_*.md
+FDE_ROADMAP.md
+HISTORY_*.md
+IMPLEMENTATION_TRACKER.md
+PHASE_2_QUICK_START.md
+QUICK_START_*.md
+v*_CHANGES_SUMMARY.md
+v*_DEPLOYMENT_COMPLETE.md
+CHANGELOG_0.*.md
+docs/**
+
+# Keep marketplace essentials.
+!README.md
+!LICENSE
