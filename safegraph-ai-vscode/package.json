@@ -1,12 +1,12 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.13.0",
+  "displayName": "Safegraph AI v0.14.0",
   "description": "MVP sidebar AI chat with local code-graph context and Bedrock integration.",
   "repository": {
     "type": "git",
     "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
   },
-  "version": "0.13.0",
+  "version": "0.14.0",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
@@ -90,7 +90,7 @@
       }
     ],
     "configuration": {
-      "title": "Safegraph AI v0.13.0",
+      "title": "Safegraph AI v0.14.0",
       "properties": {
         "safegraph.autoRun": {
           "type": "string",
@@ -138,6 +138,53 @@
           "maximum": 80000,
           "description": "Maximum characters of repository RAG context included in each prompt."
         },
+        "safegraph.vectorRag.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable optional semantic vector retrieval for repository context. Disabled by default until a sidecar provider is configured."
+        },
+        "safegraph.vectorRag.provider": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "turbovec-sidecar"
+          ],
+          "default": "disabled",
+          "description": "Semantic vector retrieval provider. turbovec-sidecar is planned for compressed local vector RAG."
+        },
+        "safegraph.vectorRag.embeddingProvider": {
+          "type": "string",
+          "enum": [
+            "bedrock",
+            "local",
+            "external"
+          ],
+          "default": "bedrock",
+          "description": "Embedding source for future vector RAG indexing."
+        },
+        "safegraph.vectorRag.dim": {
+          "type": "number",
+          "default": 1536,
+          "minimum": 8,
+          "maximum": 8192,
+          "description": "Embedding dimension for future vector RAG indexing."
+        },
+        "safegraph.vectorRag.bitWidth": {
+          "type": "number",
+          "enum": [
+            2,
+            4
+          ],
+          "default": 4,
+          "description": "TurboQuant bit width for future turbovec compressed indexes."
+        },
+        "safegraph.vectorRag.maxResults": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "maximum": 80,
+          "description": "Maximum semantic vector retrieval results before reranking and prompt compaction."
+        },
         "safegraph.agent.maxFixLoops": {
           "type": "number",
           "default": 2,
@@ -151,7 +198,7 @@
       "activitybar": [
         {
           "id": "safegraph",
-          "title": "Safegraph AI v0.13.0",
+          "title": "Safegraph AI v0.14.0",
           "icon": "media/icon.svg"
         }
       ]
@@ -181,8 +228,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "axios": "^1.6.0",
     "eslint": "^8.57.0",
-    "prettier": "^3.2.5",
-    "typescript": "^5.5.4"
+    "prettier": "^3.2.5"
   },
   "devDependencies": {
     "@types/axios": "^0.14.0",
@@ -194,6 +240,7 @@
     "jest": "^29.7.0",
     "ts-jest": "^29.1.2",
     "ts-node": "^10.9.2",
+    "typescript": "^5.5.4",
     "typescript-eslint": "^7.10.0"
   }
 }

@@ -38,6 +38,7 @@ Compared with a basic AI chat extension, Safegraph AI v0.13.0 is stronger in the
 - **Workspace grounding**: it can read, search, list files, inspect context, apply diffs, and verify results in the actual project.
 - **Lower token waste**: it caches task context, compacts memory, truncates large attachments, and avoids full repository RAG unless the request needs it.
 - **Evidence-first completion**: final output is backed by changed files, executed commands, verification status, and remaining risk.
+- **Vector RAG path**: the project now has an optional provider scaffold for future turbovec-style semantic retrieval, aimed at faster repo understanding with fewer prompt tokens.
 
 The practical advantage is that Safegraph AI can now handle multi-step code changes with a tighter edit-test-fix loop, while keeping the prompt smaller and more relevant.
 
@@ -52,6 +53,7 @@ Current limits:
 - Local tools are intentionally conservative and output-limited.
 - Subagent notes are lightweight deterministic summaries, not separate model workers.
 - The extension is not bundled yet, so the VSIX is large.
+- Semantic vector RAG is scaffolded but disabled by default; a turbovec sidecar/provider is planned rather than bundled as a native dependency today.
 
 ## Installation
 
