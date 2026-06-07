@@ -17,6 +17,7 @@ Current release: `v0.13.0`
   - `safegraph__list_files`
   - `safegraph__run_verification`
 - Produces an evidence report when a task completes, including changed files, commands run, verification status, and remaining risk.
+- Shows the current Safegraph task state in the VS Code status bar for quick visibility.
 
 ## Current AI Capabilities
 
@@ -39,6 +40,7 @@ Compared with a basic AI chat extension, Safegraph AI v0.13.0 is stronger in the
 - **Lower token waste**: it caches task context, compacts memory, truncates large attachments, and avoids full repository RAG unless the request needs it.
 - **Evidence-first completion**: final output is backed by changed files, executed commands, verification status, and remaining risk.
 - **Vector RAG path**: the project now has an optional provider scaffold for future turbovec-style semantic retrieval, aimed at faster repo understanding with fewer prompt tokens.
+- **Visible agent lane**: active task state, verification, and open errors are surfaced in the VS Code status bar without exposing an unsafe eval bridge.
 
 The practical advantage is that Safegraph AI can now handle multi-step code changes with a tighter edit-test-fix loop, while keeping the prompt smaller and more relevant.
 

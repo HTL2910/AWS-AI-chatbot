@@ -361,6 +361,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private mcpManager: McpClientManager;
   private currentTargetRoot?: vscode.Uri;
   private appliedChangeSets = new Map<string, AppliedChangeSet>();
+  private statusItem: vscode.StatusBarItem;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -370,6 +371,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.mcpManager = new McpClientManager(output);
     this.conversationSummary = String(this.context.globalState.get("safegraph.conversationSummary") || "");
     this.activeTaskState = this.loadPersistedTaskState();
+    this.statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 90);
+    this.statusItem.command = "safegraph.openChat";
+    this.statusItem.tooltip = "Safegraph AI task status";
+    this.statusItem.text = "$(sparkle) Safegraph: Ready";
+    this.statusItem.show();
+    this.context.subscriptions.push(this.statusItem);
+    if (this.activeTaskState) this.updateTaskStatusBar(this.activeTaskState);
   }
 
   resolveWebviewView(
@@ -420,6 +428,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.activeTaskState = undefined;
         await this.context.globalState.update("safegraph.conversationSummary", "");
         await this.context.globalState.update("safegraph.activeTaskState", undefined);
+        this.statusItem.text = "$(sparkle) Safegraph: Ready";
+        this.statusItem.tooltip = "Safegraph AI task status";
         this.currentAbort?.abort();
         this.output.appendLine("[safegraph-ai] chat history cleared");
         return;
@@ -1235,7 +1245,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await this.context.globalState.update("safegraph.activeTaskState", undefined);
       return;
     }
+    this.updateTaskStatusBar(this.activeTaskState);
     await this.context.globalState.update("safegraph.activeTaskState", this.activeTaskState);
+  }
+
+  private updateTaskStatusBar(task: AgentTaskState) {
+    const current = task.steps.find((step) => step.status === "in_progress");
+    const failed = task.steps.find((step) => step.status === "failed");
+    const latestVerification = task.verification[task.verification.length - 1];
+    const changed = task.filesChanged.length;
+    const commands = task.commandsExecuted.length;
+
+    if (task.status === "completed") {
+      this.statusItem.text = "$(check) Safegraph: Done";
+    } else if (failed || task.errors.length) {
+      this.statusItem.text = "$(warning) Safegraph: Needs fix";
+    } else if (latestVerification && latestVerification.passed) {
+      this.statusItem.text = "$(pass) Safegraph: Verified";
+    } else if (current) {
+      this.statusItem.text = `$(sparkle) Safegraph: ${current.title.slice(0, 28)}`;
+    } else {
+      this.statusItem.text = "$(sparkle) Safegraph: Active";
+    }
+
+    this.statusItem.tooltip = [
+      `Safegraph AI task: ${task.goal.slice(0, 140)}`,
+      `Status: ${task.status}`,
+      current ? `Current step: ${current.title}` : "",
+      failed ? `Failed step: ${failed.title}` : "",
+      `Files changed: ${changed}`,
+      `Commands run: ${commands}`,
+      latestVerification ? `Latest verification: ${latestVerification.command} => ${latestVerification.passed ? "pass" : "fail"}` : "",
+      task.errors.length ? `Open error: ${task.errors[task.errors.length - 1].slice(0, 220)}` : ""
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
 
   private getOrCreateTaskState(question: string, requestType: string, targetRoot: string) {
