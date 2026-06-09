@@ -1,48 +1,93 @@
 # Safegraph AI
 
-Safegraph AI is a VS Code coding agent extension built for Bedrock-backed autonomous development workflows. It combines sidebar chat, repository context, live diff application, terminal verification, task memory, and evidence reporting inside the editor.
+Safegraph AI is a multi-agent AI development platform built for Bedrock-backed autonomous development workflows. It combines sidebar chat, repository context, live diff application, terminal verification, task memory, artifact verification, and project-wide refactoring inside the editor.
 
-Current release: `v0.14.0`
+Current release: `v0.16.0`
 
 ## What It Does
 
-- Understands the active workspace, active file, selected text, tagged files, diagnostics, git state, and recent task history.
-- Applies model-generated unified diffs directly to the workspace with preflight validation and automatic repair attempts.
-- Runs safe build/test/typecheck/lint commands and feeds the result back into the agent loop.
-- Keeps persistent task state so follow-up turns continue the same work instead of starting from scratch.
-- Builds compact repository context with local RAG and symbol-aware chunks when the task needs codebase context.
-- Supports local tools for targeted inspection:
+- **Multi-Agent Orchestration**: Coordinate specialized agents (Planner, Coder, Tester, Reviewer, Debugger, Architect) for complex tasks
+- **Artifact-Based Verification**: Generate tangible deliverables (task lists, implementation plans, test reports, code reviews) for verification
+- **Asynchronous Task Execution**: Run long-running tasks in the background with progress tracking
+- **AI-Powered Inline Completion**: Context-aware code suggestions powered by Bedrock
+- **Multi-File Editing**: Project-wide refactoring with dependency analysis and conflict resolution
+- **Repository Context**: Understands the active workspace, active file, selected text, tagged files, diagnostics, git state, and recent task history
+- **Live Diff Application**: Applies model-generated unified diffs directly to the workspace with preflight validation and automatic repair attempts
+- **Safe Command Execution**: Runs safe build/test/typecheck/lint commands and feeds the result back into the agent loop
+- **Persistent Task State**: Keeps persistent task state so follow-up turns continue the same work instead of starting from scratch
+- **Compact Repository Context**: Builds compact repository context with local RAG and symbol-aware chunks when the task needs codebase context
+- **Local Tools**: Supports local tools for targeted inspection:
   - `safegraph__read_file`
   - `safegraph__search_files`
   - `safegraph__list_files`
   - `safegraph__run_verification`
-- Produces an evidence report when a task completes, including changed files, commands run, verification status, and remaining risk.
-- Shows the current Safegraph task state in the VS Code status bar for quick visibility.
+- **Evidence Reports**: Produces an evidence report when a task completes, including changed files, commands run, verification status, and remaining risk
+- **Status Bar Integration**: Shows the current Safegraph task state in the VS Code status bar for quick visibility
+
+## New in v0.16.0
+
+### Multi-Agent System
+- **Agent Manager**: Orchestrate multiple specialized agents working in parallel
+- **Agent Types**: Planner, Coder, Tester, Reviewer, Debugger, Architect
+- **Inter-Agent Communication**: Agents can coordinate and share information
+- **Persistent Agent State**: Agent states are persisted across sessions
+
+### Artifact Verification
+- **Artifact Generation**: Auto-generate task lists, implementation plans, test reports, code reviews
+- **Artifact Store**: Persistent storage for all artifacts
+- **Artifact Verification**: Verify agent work through tangible deliverables
+- **User Feedback**: Add feedback directly on artifacts for agent improvement
+
+### Asynchronous Execution
+- **Task Queue**: Background task queue for long-running operations
+- **Task Scheduler**: Schedule immediate, delayed, or recurring tasks
+- **Progress Tracking**: Real-time progress tracking with status bar updates
+- **Notification Manager**: Smart notifications for task completion and events
+
+### Enhanced Coding Experience
+- **Inline AI Completion**: Context-aware code suggestions powered by Bedrock
+- **Multi-Line Completion**: Generate multi-line code completions
+- **Context Analysis**: Deep understanding of code context for better suggestions
+
+### Multi-File Editing
+- **Dependency Graph**: Analyze file dependencies for safe refactoring
+- **Symbol Renamer**: Rename symbols across multiple files
+- **Conflict Resolver**: Detect and resolve edit conflicts
+- **Batch Operations**: Apply operations across multiple files at once
 
 ## Current AI Capabilities
 
-Safegraph AI v0.14.0 is no longer just a chat panel. It now behaves more like a task-oriented coding agent:
+Safegraph AI v0.16.0 is a full-featured autonomous AI development platform:
 
-- **Task planner state**: tracks goal, plan steps, files changed, commands executed, verification pass/fail, and open errors.
-- **Rolling memory**: compresses previous turns into stable memory so the model can remember decisions without resending large chat history.
-- **Context cache per task**: avoids rebuilding and resending the same large context during repeated fix/verify loops.
-- **Command feedback loop**: approved terminal commands automatically return their output to the agent for the next reasoning step.
-- **Lightweight subagent notes**: deterministic `context-scout`, `reviewer`, and `test-fixer` notes help the main agent focus on relevant files, risks, and failing verification.
-- **Token-aware context loading**: repository RAG, web research, active file snapshots, and attachments are size-limited and only expanded when needed.
+- **Multi-Agent Coordination**: Specialized agents work together on complex tasks
+- **Artifact-First Verification**: Tangible deliverables for trust and validation
+- **Background Task Execution**: Long-running tasks don't block your workflow
+- **Intelligent Code Completion**: AI-powered suggestions based on deep context analysis
+- **Project-Wide Refactoring**: Safe multi-file editing with dependency awareness
+- **Task Planner State**: Tracks goal, plan steps, files changed, commands executed, verification pass/fail, and open errors
+- **Rolling Memory**: Compresses previous turns into stable memory so the model can remember decisions without resending large chat history
+- **Context Cache Per Task**: Avoids rebuilding and resending the same large context during repeated fix/verify loops
+- **Command Feedback Loop**: Approved terminal commands automatically return their output to the agent for the next reasoning step
+- **Lightweight Subagent Notes**: Deterministic `context-scout`, `reviewer`, and `test-fixer` notes help the main agent focus on relevant files, risks, and failing verification
+- **Token-Aware Context Loading**: Repository RAG, web research, active file snapshots, and attachments are size-limited and only expanded when needed
 
 ## What Is Better Now
 
-Compared with a basic AI chat extension, Safegraph AI v0.14.0 is stronger in these areas:
+Compared with a basic AI chat extension, Safegraph AI v0.16.0 is stronger in these areas:
 
-- **Continuity**: it remembers the active task and does not treat every follow-up as a new question.
-- **Verification discipline**: it records commands and pass/fail results instead of only suggesting tests.
-- **Workspace grounding**: it can read, search, list files, inspect context, apply diffs, and verify results in the actual project.
-- **Lower token waste**: it caches task context, compacts memory, truncates large attachments, and avoids full repository RAG unless the request needs it.
-- **Evidence-first completion**: final output is backed by changed files, executed commands, verification status, and remaining risk.
-- **Vector RAG path**: the project now has an optional provider scaffold for future turbovec-style semantic retrieval, aimed at faster repo understanding with fewer prompt tokens.
-- **Visible agent lane**: active task state, verification, and open errors are surfaced in the VS Code status bar without exposing an unsafe eval bridge.
+- **Multi-Agent Collaboration**: Multiple specialized agents work together on complex tasks
+- **Artifact-Based Trust**: Tangible deliverables (plans, reports, reviews) for verification
+- **Background Processing**: Long-running tasks don't block your workflow
+- **Intelligent Completion**: Context-aware AI code suggestions
+- **Project-Wide Safety**: Dependency-aware multi-file editing with conflict resolution
+- **Continuity**: It remembers the active task and does not treat every follow-up as a new question
+- **Verification Discipline**: It records commands and pass/fail results instead of only suggesting tests
+- **Workspace Grounding**: It can read, search, list files, inspect context, apply diffs, and verify results in the actual project
+- **Lower Token Waste**: It caches task context, compacts memory, truncates large attachments, and avoids full repository RAG unless the request needs it
+- **Evidence-First Completion**: Final output is backed by changed files, executed commands, verification status, and remaining risk
+- **Visible Agent Lane**: Active task state, verification, and open errors are surfaced in the VS Code status bar without exposing an unsafe eval bridge
 
-The practical advantage is that Safegraph AI can now handle multi-step code changes with a tighter edit-test-fix loop, while keeping the prompt smaller and more relevant.
+The practical advantage is that Safegraph AI can now handle complex, multi-step development tasks with multiple agents working in parallel, while keeping you informed through artifacts and progress tracking.
 
 ## Honest Limits
 
@@ -97,7 +142,7 @@ What Safegraph learns from Bedrock-Coder:
 Install the packaged VSIX:
 
 ```sh
-code --install-extension safegraph-ai-0.14.0.vsix --force
+code --install-extension safegraph-ai-0.16.0.vsix --force
 ```
 
 Verify installation:
@@ -109,7 +154,7 @@ code --list-extensions --show-versions | grep safegraph
 Expected:
 
 ```text
-safegraph.safegraph-ai@0.14.0
+safegraph.safegraph-ai@0.16.0
 ```
 
 ## Configuration
@@ -138,6 +183,13 @@ Important settings:
 - `safegraph.vectorRag.enabled`
 - `safegraph.vectorRag.provider`
 - `safegraph.agent.maxFixLoops`
+- `safegraph.agent.enabled` (new)
+- `safegraph.agent.maxConcurrent` (new)
+- `safegraph.artifact.autoGenerate` (new)
+- `safegraph.completion.enabled` (new)
+- `safegraph.completion.triggerMode` (new)
+- `safegraph.multifile.dependencyAnalysis` (new)
+- `safegraph.agent.maxFixLoops`
 
 ## Using The Chat
 
@@ -146,6 +198,8 @@ Important settings:
 - Use `@Repository` when you explicitly want broad codebase context.
 - Toggle Agent mode for autonomous apply/run/repair workflows.
 - Review live-applied change sets and choose whether to keep or discard them.
+- Use the Agent Manager to coordinate multiple specialized agents.
+- View Artifacts to verify agent work through tangible deliverables.
 
 ## Dock To Right
 
@@ -168,14 +222,13 @@ Launch an Extension Development Host:
 1. Open `safegraph-ai-vscode` in VS Code.
 2. Press `F5`.
 
-## v0.14.0 Highlights
+## v0.16.0 Highlights
 
-- Persistent task planner state.
-- Rolling long-lived memory.
-- Context cache per task.
-- Local tool layer for file/search/list/verification.
-- Lightweight subagent notes.
-- Automatic evidence reports.
-- Reduced token usage across repository context, attachments, web research, and conversation history.
-- Optional vector RAG provider scaffold for future turbovec-style semantic retrieval.
-- Visible Safegraph task lane in the VS Code status bar.
+- Multi-agent orchestration system with specialized agent types
+- Artifact generation and verification for trust and validation
+- Asynchronous task execution with progress tracking
+- AI-powered inline code completion with context awareness
+- Multi-file editing with dependency analysis and conflict resolution
+- Enhanced task coordination and background processing
+- New views: Agent Manager and Artifact Viewer
+- Improved configuration options for fine-grained control

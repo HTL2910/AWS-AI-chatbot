@@ -61,6 +61,7 @@ function renderEnhancedDiff(diffText) {
   const setKeyEl = document.getElementById("setKey");
   const checkKeyEl = document.getElementById("checkKey");
   const openLogEl = document.getElementById("openLog");
+  const openHistoryEl = document.getElementById("openHistory");
   const attachFileEl = document.getElementById("attachFile");
   const addActiveFileEl = document.getElementById("addActiveFile");
   const addSelectionEl = document.getElementById("addSelection");
@@ -241,6 +242,14 @@ function renderEnhancedDiff(diffText) {
     openLogEl.addEventListener("click", (e) => {
       e.preventDefault();
       vscode.postMessage({ type: "openLog" });
+      inputEl.focus();
+    });
+  }
+
+  if (openHistoryEl) {
+    openHistoryEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      vscode.postMessage({ type: "openHistory" });
       inputEl.focus();
     });
   }
@@ -878,6 +887,53 @@ function renderEnhancedDiff(diffText) {
     });
   }
 
+  function renderToolStatus(msg) {
+    const id = String(msg.id || "tools");
+    let panel = document.getElementById(id);
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = id;
+      panel.className = "toolStatusPanel";
+      messagesEl.appendChild(panel);
+    }
+
+    const tools = Array.isArray(msg.tools) ? msg.tools : [];
+    panel.dataset.done = msg.done ? "true" : "false";
+    panel.innerHTML = "";
+
+    const title = document.createElement("div");
+    title.className = "toolStatusTitle";
+    const finished = tools.filter((tool) => tool.status === "success" || tool.status === "error").length;
+    title.textContent = `Tools ${finished}/${tools.length}`;
+    panel.appendChild(title);
+
+    for (const tool of tools) {
+      const row = document.createElement("div");
+      row.className = "toolStatusRow";
+      row.dataset.status = tool.status || "queued";
+
+      const name = document.createElement("span");
+      name.className = "toolStatusName";
+      name.textContent = String(tool.name || "tool").replace(/^safegraph__/, "");
+
+      const status = document.createElement("span");
+      status.className = "toolStatusBadge";
+      status.textContent = String(tool.status || "queued");
+
+      row.append(name, status);
+      if (tool.detail) {
+        const detail = document.createElement("span");
+        detail.className = "toolStatusDetail";
+        detail.textContent = String(tool.detail);
+        row.appendChild(detail);
+      }
+      panel.appendChild(row);
+    }
+
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    updateEmptyState();
+  }
+
   function setAssistantText(id, text, done) {
     let el = assistantById.get(id);
     if (!el) {
@@ -1062,6 +1118,7 @@ function renderEnhancedDiff(diffText) {
     if (msg.type === "fileSuggestions") renderSuggestions(msg.items || []);
     if (msg.type === "commandProposed") renderCommandPanel(msg.items || []);
     if (msg.type === "commandUpdate") updateCommand(msg);
+    if (msg.type === "toolStatus") renderToolStatus(msg);
     if (msg.type === "commandFinishedAndFeedback") {
       pendingCommandFeedback = String(msg.text || "");
       drainPendingCommandFeedback();

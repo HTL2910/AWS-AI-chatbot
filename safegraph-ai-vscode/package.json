@@ -1,18 +1,19 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.15.0",
-  "description": "MVP sidebar AI chat with local code-graph context and Bedrock integration.",
+  "displayName": "Safegraph AI v0.16.0",
+  "description": "Multi-agent AI development platform with autonomous coding, artifact verification, and project-wide refactoring.",
   "repository": {
     "type": "git",
     "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
   },
-  "version": "0.15.0",
+  "version": "0.16.0",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Machine Learning"
   ],
   "activationEvents": [
     "onStartupFinished",
@@ -23,7 +24,9 @@
     "onCommand:safegraph.openLog",
     "onCommand:safegraph.moveChatRight",
     "onCommand:safegraph.inlineEdit",
-    "onCommand:safegraph.showHistory"
+    "onCommand:safegraph.showHistory",
+    "onCommand:safegraph.openAgentManager",
+    "onCommand:safegraph.openArtifactViewer"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -67,6 +70,14 @@
       {
         "command": "safegraph.showHistory",
         "title": "Safegraph AI: Show Task History"
+      },
+      {
+        "command": "safegraph.openAgentManager",
+        "title": "Safegraph AI: Open Agent Manager"
+      },
+      {
+        "command": "safegraph.openArtifactViewer",
+        "title": "Safegraph AI: Open Artifact Viewer"
       }
     ],
     "keybindings": [
@@ -90,7 +101,7 @@
       }
     ],
     "configuration": {
-      "title": "Safegraph AI v0.15.0",
+      "title": "Safegraph AI v0.16.0",
       "properties": {
         "safegraph.autoRun": {
           "type": "string",
@@ -191,6 +202,47 @@
           "minimum": 0,
           "maximum": 3,
           "description": "Maximum autonomous edit-test-fix loops after Safegraph applies a diff. Only safe allowlisted commands auto-run."
+        },
+        "safegraph.mcp.codegraph.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Start the optional external CodeGraph MCP server with npx for repository analysis. Disabled by default to avoid slow or failing network-backed startup."
+        },
+        "safegraph.agent.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable multi-agent orchestration system for complex tasks."
+        },
+        "safegraph.agent.maxConcurrent": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum number of concurrent agents running."
+        },
+        "safegraph.artifact.autoGenerate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically generate artifacts for task verification."
+        },
+        "safegraph.completion.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable AI-powered inline code completion."
+        },
+        "safegraph.completion.triggerMode": {
+          "type": "string",
+          "enum": [
+            "automatic",
+            "manual"
+          ],
+          "default": "automatic",
+          "description": "When to trigger inline completion suggestions."
+        },
+        "safegraph.multifile.dependencyAnalysis": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable dependency analysis for multi-file editing."
         }
       }
     },
@@ -198,7 +250,7 @@
       "activitybar": [
         {
           "id": "safegraph",
-          "title": "Safegraph AI v0.15.0",
+          "title": "Safegraph AI v0.16.0",
           "icon": "media/icon.svg"
         }
       ]
@@ -209,6 +261,18 @@
           "id": "safegraph.chatView",
           "name": "Chat",
           "type": "webview"
+        },
+        {
+          "id": "safegraph.agentManager",
+          "name": "Agent Manager",
+          "type": "webview",
+          "when": "safegraph.agent.enabled"
+        },
+        {
+          "id": "safegraph.artifactViewer",
+          "name": "Artifacts",
+          "type": "webview",
+          "when": "safegraph.artifact.autoGenerate"
         }
       ]
     }
@@ -226,7 +290,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "axios": "^1.6.0"
+    "axios": "^1.6.0",
+    "typescript": "^5.5.4"
   },
   "devDependencies": {
     "@types/axios": "^0.14.0",
@@ -240,7 +305,6 @@
     "prettier": "^3.2.5",
     "ts-jest": "^29.1.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.5.4",
     "typescript-eslint": "^7.10.0"
   }
 }

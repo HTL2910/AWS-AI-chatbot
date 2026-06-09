@@ -13,6 +13,7 @@ import { McpClientManager } from "../mcp/McpClient";
 import { CommandRunner, CommandRunResult, CommandUpdateMessage } from "../terminal/commandRunner";
 import { AutoRunMode, decideCommand } from "../terminal/commandPolicy";
 import { extractDiffBlocks, formatApplyError, shellQuote, stripDiffBlocksForLiveApply } from "./diffText";
+import { HistoryManager } from "../history/HistoryManager";
 import {
   extractPageTitle,
   extractRelatedLinks,
@@ -37,6 +38,7 @@ type WebviewToExtensionMessage =
   | { type: "setApiKey" }
   | { type: "checkApiKey" }
   | { type: "openLog" }
+  | { type: "openHistory" }
   | { type: "moveRight" }
   | { type: "clearChat" }
   | { type: "pickFilesOrFolders" }
@@ -54,6 +56,7 @@ type WebviewToExtensionMessage =
 type ExtensionToWebviewMessage =
   | { type: "assistantMessage"; id: string; text: string; ts: number; done?: boolean }
   | { type: "error"; message: string; ts: number }
+  | { type: "toolStatus"; id: string; tools: { name: string; status: "queued" | "running" | "success" | "error"; detail?: string }[]; ts: number; done?: boolean }
   | { type: "autoAppliedChangeSet"; id: string; diff: string; summary: string; ts: number }
   | { type: "changeSetUpdate"; id: string; status: "kept" | "discarded" | "error"; message?: string; ts: number }
   | { type: "contextItem"; kind: "file"; path: string; label: string; ts: number }
@@ -323,7 +326,9 @@ ${workflow}
 ${args.taskState ? `\nCURRENT TASK STATE\n${args.taskState}\n` : ""}
 
 LOCAL TOOLING CONTRACT
-- Prefer Safegraph local tools for incremental inspection: safegraph__read_file, safegraph__search_files, safegraph__list_files, safegraph__run_verification.
+- Prefer Safegraph local tools for incremental inspection: safegraph__read_file, safegraph__search_files, safegraph__list_files.
+- Use safegraph__run_safe_command only for safe read-only inspection commands such as pwd, ls, rg, git status, or npm pkg get scripts.
+- Use safegraph__run_verification only for build/test/typecheck/lint verification commands after a change or when diagnosing a failure.
 - Use tools to read/search targeted files instead of asking for pasted content or relying on stale broad context.
 - Prefer smaller edits backed by tool evidence over long speculative diffs.
 
@@ -365,7 +370,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly output: vscode.OutputChannel
+    private readonly output: vscode.OutputChannel,
+    private readonly historyManager?: HistoryManager
   ) {
     this.cmdRunner = new CommandRunner(output);
     this.mcpManager = new McpClientManager(output);
@@ -416,6 +422,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       if (msg.type === "openLog") {
         await vscode.commands.executeCommand("safegraph.openLog");
+        return;
+      }
+      if (msg.type === "openHistory") {
+        await vscode.commands.executeCommand("safegraph.showHistory");
         return;
       }
       if (msg.type === "moveRight") {
@@ -644,13 +654,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           };
           webviewView.webview.postMessage(thinking);
 
-          const maxTaskLoops = 15;
+          const maxTaskLoops = 8;
           let isDone = false;
           let totalAcc = "";
 
           const messages: { role: "user" | "assistant"; text?: string; content?: any[] }[] = [
             { role: "user", text: taskPrompt }
           ];
+          const toolCallCounts = new Map<string, number>();
 
           const cfg2 = vscode.workspace.getConfiguration("safegraph");
           const mode: AutoRunMode = msg.agentMode ? "safe" : "ask";
@@ -661,22 +672,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const toolsList: any[] = [];
           toolsList.push(...this.localToolSpecs());
 
-          // Connect default CodeGraph MCP
-          try {
-            const codegraphServerId = "codegraph";
-            await this.mcpManager.connectStdio(codegraphServerId, "npx", ["-y", "@colbymchenry/codegraph", "mcp"], process.env as Record<string, string>);
-            const cgTools = await this.mcpManager.listTools(codegraphServerId);
-            for (const t of cgTools.tools) {
-              toolsList.push({
-                toolSpec: {
-                  name: `mcp__${codegraphServerId}__${t.name}`,
-                  description: t.description || `MCP tool ${t.name}`,
-                  inputSchema: { json: t.inputSchema }
-                }
-              });
+          // Optional external CodeGraph MCP. Local Safegraph tools stay available without it.
+          if (cfg2.get<boolean>("mcp.codegraph.enabled", false)) {
+            try {
+              const codegraphServerId = "codegraph";
+              await this.mcpManager.connectStdio(codegraphServerId, "npx", ["-y", "@colbymchenry/codegraph", "mcp"], process.env as Record<string, string>);
+              const cgTools = await this.mcpManager.listTools(codegraphServerId);
+              for (const t of cgTools.tools) {
+                toolsList.push({
+                  toolSpec: {
+                    name: `mcp__${codegraphServerId}__${t.name}`,
+                    description: t.description || `MCP tool ${t.name}`,
+                    inputSchema: { json: t.inputSchema }
+                  }
+                });
+              }
+            } catch (e) {
+              this.output.appendLine("Failed to start optional codegraph MCP: " + String(e));
             }
-          } catch (e) {
-            this.output.appendLine("Failed to start default codegraph MCP: " + String(e));
+          } else {
+            this.output.appendLine("[MCP] Optional codegraph MCP disabled by safegraph.mcp.codegraph.enabled=false");
           }
           try {
             const mcpJsonPath = path.join(cwd, ".vscode", "mcp.json");
@@ -736,61 +751,63 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 toolConfig
               };
               const streamBaseAcc = totalAcc + (totalAcc ? "\n\n---\n\n" : "");
-              const r = await bedrockConverseStream(nextMessages, responseOptions, {
-                onText: async (_delta, fullText) => {
-                  if (this.currentAbort?.signal.aborted) throw new Error("aborted");
+              const r = toolConfig
+                ? await bedrockConverse(nextMessages, responseOptions)
+                : await bedrockConverseStream(nextMessages, responseOptions, {
+                    onText: async (_delta, fullText) => {
+                      if (this.currentAbort?.signal.aborted) throw new Error("aborted");
 
-                  const completeDiffs = extractDiffBlocks(fullText);
-                  for (const diffBlock of completeDiffs) {
-                    const diffKey = diffBlock.trim();
-                    if (!diffKey || streamedAppliedDiffBlocks.has(diffKey)) continue;
-                    streamedAppliedDiffBlocks.add(diffKey);
-                    try {
-                      const changeSetId = `${msg.id}-${step}-stream-${Date.now()}-${streamedAppliedDiffBlocks.size}`;
-                      const appliedDiff = await this.applyDiffWithRepair(
-                        diffBlock,
-                        "Streaming autonomous chat code changes",
-                        targetRoot,
-                        changeSetId
-                      );
-                      if (appliedDiff.trim()) {
-                        streamedAppliedDiffs.push(appliedDiff);
-                        await this.recordTaskDiffApplied(appliedDiff);
-                        webviewView.webview.postMessage({
-                          type: "autoAppliedChangeSet",
-                          id: changeSetId,
-                          diff: appliedDiff,
-                          summary: this.summarizeAppliedDiff(appliedDiff),
-                          ts: Date.now()
-                        } satisfies ExtensionToWebviewMessage);
-                        streamLoopFeedback += "Diff applied live while the model was still responding.\n";
+                      const completeDiffs = extractDiffBlocks(fullText);
+                      for (const diffBlock of completeDiffs) {
+                        const diffKey = diffBlock.trim();
+                        if (!diffKey || streamedAppliedDiffBlocks.has(diffKey)) continue;
+                        streamedAppliedDiffBlocks.add(diffKey);
+                        try {
+                          const changeSetId = `${msg.id}-${step}-stream-${Date.now()}-${streamedAppliedDiffBlocks.size}`;
+                          const appliedDiff = await this.applyDiffWithRepair(
+                            diffBlock,
+                            "Streaming autonomous chat code changes",
+                            targetRoot,
+                            changeSetId
+                          );
+                          if (appliedDiff.trim()) {
+                            streamedAppliedDiffs.push(appliedDiff);
+                            await this.recordTaskDiffApplied(appliedDiff);
+                            webviewView.webview.postMessage({
+                              type: "autoAppliedChangeSet",
+                              id: changeSetId,
+                              diff: appliedDiff,
+                              summary: this.summarizeAppliedDiff(appliedDiff),
+                              ts: Date.now()
+                            } satisfies ExtensionToWebviewMessage);
+                            streamLoopFeedback += "Diff applied live while the model was still responding.\n";
+                          }
+                        } catch (error) {
+                          streamExecutionFailed = true;
+                          streamLoopFeedback += `Failed to live-apply streamed diff: ${String(error)}\n`;
+                          await this.recordTaskError(`Failed to live-apply diff: ${String(error)}`);
+                        }
                       }
-                    } catch (error) {
-                      streamExecutionFailed = true;
-                      streamLoopFeedback += `Failed to live-apply streamed diff: ${String(error)}\n`;
-                      await this.recordTaskError(`Failed to live-apply diff: ${String(error)}`);
-                    }
-                  }
 
-                  const nextUi = stripDiffBlocksForLiveApply(fullText)
-                    .replace(/\[CONTINUE\]/g, "")
-                    .replace(/\[DONE\]/g, "")
-                    .trim();
-                  if (nextUi && nextUi !== streamedUiText) {
-                    streamedUiText = nextUi;
-                    webviewView.webview.postMessage({
-                      type: "assistantMessage",
-                      id: msg.id,
-                      text: streamBaseAcc + streamedUiText,
-                      ts: Date.now(),
-                      done: false
-                    });
-                  }
-                }
-              }).catch(async (error) => {
-                this.output.appendLine(`[safegraph-ai] ConverseStream failed, falling back to Converse: ${String(error)}`);
-                return bedrockConverse(nextMessages, responseOptions);
-              });
+                      const nextUi = stripDiffBlocksForLiveApply(fullText)
+                        .replace(/\[CONTINUE\]/g, "")
+                        .replace(/\[DONE\]/g, "")
+                        .trim();
+                      if (nextUi && nextUi !== streamedUiText) {
+                        streamedUiText = nextUi;
+                        webviewView.webview.postMessage({
+                          type: "assistantMessage",
+                          id: msg.id,
+                          text: streamBaseAcc + streamedUiText,
+                          ts: Date.now(),
+                          done: false
+                        });
+                      }
+                    }
+                  }).catch(async (error) => {
+                    this.output.appendLine(`[safegraph-ai] ConverseStream failed, falling back to Converse: ${String(error)}`);
+                    return bedrockConverse(nextMessages, responseOptions);
+                  });
               let rawContent = r.raw?.output?.message?.content || [];
               let stopReason = String(r.stopReason || "");
               combined = (combined + (combined ? "\n" : "") + r.text).trim();
@@ -804,23 +821,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 const toolUses = rawContent.filter((c: any) => c.toolUse);
                 if (toolUses.length > 0) {
                   messages.push({ role: "assistant", content: rawContent });
-                  webviewView.webview.postMessage({
-                    type: "assistantMessage",
-                    id: msg.id + "_tool_" + step,
-                    text: `Calling ${toolUses.length} tools...`,
-                    ts: Date.now(),
-                    done: false
-                  });
+                  const toolStatusId = `${msg.id}_tools_${step}`;
+                  const toolStatuses = toolUses.map((tu: any) => ({
+                    name: String(tu.toolUse?.name || "tool"),
+                    status: "queued" as const
+                  }));
+                  const postToolStatus = (done = false) => {
+                    webviewView.webview.postMessage({
+                      type: "toolStatus",
+                      id: toolStatusId,
+                      tools: toolStatuses,
+                      ts: Date.now(),
+                      done
+                    } satisfies ExtensionToWebviewMessage);
+                  };
+                  postToolStatus(false);
 
                   let toolResults = [];
-                  for (const tu of toolUses) {
+                  for (let toolIndex = 0; toolIndex < toolUses.length; toolIndex++) {
+                    const tu = toolUses[toolIndex];
                     const call = tu.toolUse;
                     try {
+                      const signature = this.toolCallSignature(call?.name, call?.input);
+                      const seen = (toolCallCounts.get(signature) || 0) + 1;
+                      toolCallCounts.set(signature, seen);
+                      if (seen > 2) {
+                        throw new Error(`Repeated identical tool call blocked after ${seen - 1} runs: ${call?.name}. Use the previous tool result or ask for a different file/query.`);
+                      }
                       // parse serverId__toolName
                       const nameParts = call.name.split("__");
                       const serverId = nameParts[0];
                       const toolName = nameParts.slice(1).join("__");
                       this.output.appendLine(`[MCP] Calling ${serverId} -> ${toolName}`);
+                      toolStatuses[toolIndex] = { name: call.name, status: "running", detail: "running" };
+                      postToolStatus(false);
                       
                       const result =
                         serverId === "safegraph"
@@ -836,6 +870,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                       } else {
                         resultText = JSON.stringify(result);
                       }
+                      toolStatuses[toolIndex] = { name: call.name, status: "success", detail: this.summarizeToolResult(resultText) };
+                      postToolStatus(false);
 
                       toolResults.push({
                         toolResult: {
@@ -845,6 +881,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         }
                       });
                     } catch(e) {
+                      toolStatuses[toolIndex] = { name: String(call?.name || "tool"), status: "error", detail: String(e).slice(0, 240) };
+                      postToolStatus(false);
                       toolResults.push({
                         toolResult: {
                           toolUseId: call.toolUseId,
@@ -854,6 +892,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                       });
                     }
                   }
+                  postToolStatus(true);
                   messages.push({ role: "user", content: toolResults });
                   isToolLoop = true;
                   break; // break the chunk loop, and we will continue the main loop
@@ -997,6 +1036,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
           }
 
+          if (!isDone && !String(totalAcc || "").trim()) {
+            totalAcc = "Stopped after reaching the tool loop limit. The agent repeated inspection/tool calls without producing a final answer.";
+          } else if (!isDone && toolCallCounts.size > 0) {
+            totalAcc = `${String(totalAcc || "").trim()}\n\nStopped before completion because the agent reached the tool loop limit. Review the tool status panel above for the last completed tool calls.`.trim();
+          }
+
           webviewView.webview.postMessage({
             type: "assistantMessage",
             id: msg.id,
@@ -1100,6 +1145,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       {
         toolSpec: {
+          name: "safegraph__run_safe_command",
+          description: "Run a safe read-only inspection command and return compact output. Use for pwd, ls, rg, git status, npm pkg get scripts, and similar non-mutating diagnostics. Unsafe commands are refused.",
+          inputSchema: {
+            json: {
+              type: "object",
+              properties: {
+                command: { type: "string", description: "Safe read-only command such as pwd, ls, rg pattern, git status --short, or npm pkg get scripts" }
+              },
+              required: ["command"]
+            }
+          }
+        }
+      },
+      {
+        toolSpec: {
           name: "safegraph__run_verification",
           description: "Run a safe build/test/typecheck/lint command and return compact output. Unsafe commands are refused.",
           inputSchema: {
@@ -1124,6 +1184,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return await this.localSearchFiles(input, targetRoot);
       case "list_files":
         return await this.localListFiles(input, targetRoot);
+      case "run_safe_command":
+        return await this.localRunSafeCommand(input, cwd, webview);
       case "run_verification":
         return await this.localRunVerification(input, cwd, webview);
       default:
@@ -1209,15 +1271,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return matches.join("\n") || "(no matches)";
   }
 
-  private async localRunVerification(input: any, cwd: string, webview: vscode.Webview) {
-    const command = String(input?.command || "").trim();
-    if (!command) throw new Error("Missing verification command.");
-    if (!/\b(test|build|typecheck|lint|pytest|jest|tsc|py_compile|cargo test|go test)\b/i.test(command)) {
-      throw new Error("Refusing to run a non-verification command through run_verification.");
-    }
+  private summarizeToolResult(resultText: string) {
+    const text = String(resultText || "").trim();
+    if (!text) return "empty result";
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    if (lines.length > 1) return `${lines.length} lines`;
+    return lines[0].slice(0, 120);
+  }
+
+  private toolCallSignature(name: unknown, input: unknown) {
+    return `${String(name || "tool")} ${this.stableStringify(input)}`;
+  }
+
+  private stableStringify(value: unknown): string {
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map((item) => this.stableStringify(item)).join(",")}]`;
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${this.stableStringify(obj[key])}`).join(",")}}`;
+  }
+
+  private isSafeInspectionCommand(command: string) {
+    const trimmed = command.trim();
+    return /^(pwd|ls|rg|grep|find|cat|head|tail|wc)(\s|$)/i.test(trimmed) ||
+      /^git\s+(status|diff|log|show)(\s|$)/i.test(trimmed) ||
+      /^npm\s+pkg\s+get(\s|$)/i.test(trimmed) ||
+      /^npm\s+run\s*$/i.test(trimmed) ||
+      /^(node|npm)\s+-v\s*$/i.test(trimmed) ||
+      /^python3?\s+--version\s*$/i.test(trimmed);
+  }
+
+  private async runLocalCommandTool(command: string, cwd: string, webview: vscode.Webview) {
     const decision = decideCommand(command, "safe");
     if (decision.decision !== "allow") {
-      throw new Error(`Verification command requires approval or is unsafe: ${decision.reason}`);
+      throw new Error(`Command requires approval or is unsafe: ${decision.reason}`);
     }
     const id = `tool-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const result = await this.cmdRunner.runAndWait(id, command, cwd, (m) => webview.postMessage(m));
@@ -1229,6 +1315,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       "Output:",
       result.output.slice(-8000) || "(no output)"
     ].join("\n");
+  }
+
+  private async localRunSafeCommand(input: any, cwd: string, webview: vscode.Webview) {
+    const command = String(input?.command || "").trim();
+    if (!command) throw new Error("Missing command.");
+    if (!this.isSafeInspectionCommand(command)) {
+      throw new Error("Refusing to run a non-inspection command through run_safe_command. Use run_verification for build/test/lint, or propose a command for user approval.");
+    }
+    return await this.runLocalCommandTool(command, cwd, webview);
+  }
+
+  private async localRunVerification(input: any, cwd: string, webview: vscode.Webview) {
+    const command = String(input?.command || "").trim();
+    if (!command) throw new Error("Missing verification command.");
+    if (!/\b(test|build|typecheck|lint|pytest|jest|tsc|py_compile|cargo test|go test)\b/i.test(command)) {
+      throw new Error("Refusing to run a non-verification command through run_verification.");
+    }
+    return await this.runLocalCommandTool(command, cwd, webview);
   }
 
   private loadPersistedTaskState() {
@@ -1289,6 +1393,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     if (!canContinue) {
       this.activeTaskState = this.createTaskState(question, requestType, targetRoot);
+      this.historyManager?.startTask(question.slice(0, 160), `${requestType} in ${targetRoot || "(no workspace)"}`);
     } else if (this.activeTaskState) {
       this.activeTaskState.updatedAt = Date.now();
       this.activeTaskState.targetRoot = targetRoot || this.activeTaskState.targetRoot;
@@ -1536,6 +1641,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     for (const file of this.extractChangedFilesFromDiff(diff)) {
       if (!task.filesChanged.includes(file)) task.filesChanged.push(file);
     }
+    this.historyManager?.logAction(this.summarizeAppliedDiff(diff), "diff", diff.slice(0, 12000));
     task.contextCache = undefined;
     this.advanceTaskStep(/apply|implement|refactor|screen|changes/i, "completed", this.summarizeAppliedDiff(diff));
     await this.persistTaskState();
@@ -1546,9 +1652,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!task) return;
     const status = result.status === "success" && (result.exitCode === undefined || result.exitCode === 0) ? "success" : result.status;
     task.commandsExecuted.push({ cmd: result.cmd, exitCode: result.exitCode, status });
+    this.historyManager?.logAction(`Run command: ${result.cmd}`, "command", undefined, result.exitCode, result.output.slice(-12000));
     const looksLikeVerification = /\b(test|build|typecheck|lint|pytest|jest|tsc|py_compile|cargo test|go test)\b/i.test(result.cmd);
     if (looksLikeVerification) {
       const passed = status === "success";
+      this.historyManager?.logVerification(passed, `${result.cmd}\nExit code: ${result.exitCode ?? "(unknown)"}\n${result.output.slice(-4000)}`);
       task.verification.push({
         command: result.cmd,
         passed,
@@ -1587,6 +1695,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const summary = this.compactHistoryText(finalText, "assistant").slice(0, 500);
       const finalStep = task.steps[task.steps.length - 1];
       if (finalStep) finalStep.evidence = summary;
+      this.historyManager?.completeTask(summary, true);
     }
     task.updatedAt = Date.now();
     await this.persistTaskState();

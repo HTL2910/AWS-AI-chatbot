@@ -120,6 +120,10 @@ function appendStreamEventToContent(event: any, blocks: any[]) {
   return "";
 }
 
+function isUnusableCompletedStream(error: unknown) {
+  return /Bedrock stream completed without usable content/i.test(String(error instanceof Error ? error.message : error));
+}
+
 function finalizeStreamContent(blocks: any[]) {
   return blocks
     .filter(Boolean)
@@ -352,6 +356,9 @@ export async function bedrockConverseStream(
       });
     } catch (error) {
       lastError = error as Error;
+      if (isUnusableCompletedStream(error)) {
+        break;
+      }
       if (attempt < maxRetries) {
         const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
         await sleep(delay);

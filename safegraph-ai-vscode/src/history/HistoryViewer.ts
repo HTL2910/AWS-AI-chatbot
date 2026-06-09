@@ -52,13 +52,21 @@ export class HistoryViewer {
     };
 
     const typeIcons: Record<string, string> = {
-      TASK_START: '🚀',
-      TASK_COMPLETE: '✅',
-      TASK_FAILED: '❌',
-      ACTION: '⚙️',
+      TASK_START: 'START',
+      TASK_COMPLETE: 'DONE',
+      TASK_FAILED: 'FAIL',
+      ACTION: 'ACTION',
       VERIFICATION: '✓',
-      SUMMARY: '📋',
+      SUMMARY: 'SUMMARY',
     };
+
+    const esc = (value: unknown) =>
+      String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 
     const rows = entries
       .map(entry => {
@@ -66,20 +74,21 @@ export class HistoryViewer {
         const icon = typeIcons[entry.type] || '•';
         const time = new Date(entry.timestamp).toLocaleString();
         const duration = entry.duration ? `${Math.round(entry.duration / 1000)}s` : '-';
+        const detailsId = `details_${esc(entry.id)}`;
 
         return `
-      <tr onclick="toggleDetails('${entry.id}')" style="cursor: pointer;">
-        <td style="color: ${color}; font-weight: bold;">${icon} ${entry.type}</td>
-        <td>${entry.title}</td>
-        <td>${time}</td>
-        <td>${duration}</td>
+      <tr onclick="toggleDetails('${detailsId}')" style="cursor: pointer;">
+        <td style="color: ${color}; font-weight: bold;">${icon} ${esc(entry.type)}</td>
+        <td>${esc(entry.title)}</td>
+        <td>${esc(time)}</td>
+        <td>${esc(duration)}</td>
       </tr>
-      <tr id="details_${entry.id}" style="display: none;">
+      <tr id="${detailsId}" style="display: none;">
         <td colspan="4" style="padding: 12px; background: #252526; border-left: 3px solid ${color};">
           <div style="font-size: 12px; line-height: 1.6;">
-            ${entry.description ? `<p><strong>Description:</strong> ${entry.description}</p>` : ''}
-            ${entry.summary ? `<p><strong>Summary:</strong> ${entry.summary}</p>` : ''}
-            ${entry.verification ? `<p><strong>Verification:</strong> ${entry.verification.details}</p>` : ''}
+            ${entry.description ? `<p><strong>Description:</strong> ${esc(entry.description)}</p>` : ''}
+            ${entry.summary ? `<p><strong>Summary:</strong> ${esc(entry.summary)}</p>` : ''}
+            ${entry.verification ? `<p><strong>Verification:</strong> <pre>${esc(entry.verification.details)}</pre></p>` : ''}
             ${entry.actions ? `<p><strong>Actions:</strong> ${entry.actions.length} action(s)</p>` : ''}
           </div>
         </td>
@@ -152,12 +161,10 @@ export class HistoryViewer {
       </style>
     </head>
     <body>
-      <h2>📚 Task History</h2>
+      <h2>Task History</h2>
       <div class="controls">
         <input type="text" class="search-box" placeholder="Search tasks..." id="searchBox">
         <button onclick="location.reload()">Refresh</button>
-        <button onclick="exportHistory('json')">Export JSON</button>
-        <button onclick="exportHistory('csv')">Export CSV</button>
       </div>
       <table>
         <thead>
@@ -174,7 +181,8 @@ export class HistoryViewer {
       </table>
       <script>
         function toggleDetails(id) {
-          const elem = document.getElementById('details_' + id);
+          const elem = document.getElementById(id);
+          if (!elem) return;
           elem.style.display = elem.style.display === 'none' ? 'table-row' : 'none';
         }
       </script>
