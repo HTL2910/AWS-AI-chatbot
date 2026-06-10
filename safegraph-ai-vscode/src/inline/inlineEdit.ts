@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { bedrockConverse } from "../bedrock/bedrockClient";
-import { loadBedrockApiKeyFromDotEnv } from "../config/env";
+import { getBedrockModelConfig, resolveBedrockApiKey } from "../config/bedrock";
 import { maskSensitive } from "../security/mask";
 
 function takeBefore(text: string, offset: number, maxChars: number) {
@@ -15,19 +15,6 @@ function stripCodeFence(text: string) {
   const trimmed = text.trim();
   const match = trimmed.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)```$/);
   return (match ? match[1] : trimmed).replace(/\n$/, "");
-}
-
-async function loadApiKey(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
-  let apiKey = (await context.secrets.get("safegraph.bedrockApiKey")) || "";
-  if (!apiKey) {
-    const envKey = await loadBedrockApiKeyFromDotEnv([context.extensionUri.fsPath]);
-    if (envKey) {
-      apiKey = envKey;
-      await context.secrets.store("safegraph.bedrockApiKey", apiKey);
-      output.appendLine("[safegraph-ai] loaded Bedrock API key from .env into SecretStorage");
-    }
-  }
-  return apiKey;
 }
 
 const additionDecorationType = vscode.window.createTextEditorDecorationType({
@@ -78,18 +65,13 @@ export async function runInlineEdit(context: vscode.ExtensionContext, output: vs
   });
   if (!instruction?.trim()) return;
 
-  const apiKey = await loadApiKey(context, output);
+  const apiKey = await resolveBedrockApiKey(context, output);
   if (!apiKey) {
     vscode.window.showErrorMessage("Safegraph AI: Missing Bedrock API key.");
     return;
   }
 
-  const cfg = vscode.workspace.getConfiguration("safegraph");
-  const region = String(cfg.get("region") || "ap-southeast-1");
-  const modelId = String(
-    cfg.get("modelId") ||
-      "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
-  );
+  const { region, modelId } = getBedrockModelConfig();
 
   const doc = editor.document;
   const selection = editor.selection;

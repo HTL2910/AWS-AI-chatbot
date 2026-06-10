@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.17.0] - 2026-06-10
+
+### Added
+- **Inline AI Completion (ghost text)** — registered a VS Code `InlineCompletionItemProvider`
+  (previously implemented but never wired up), giving Cursor-style suggestions.
+- Fill-in-the-middle prompting that uses code before **and** after the cursor.
+- New commands: `Safegraph AI: Toggle Inline Completion`, `Safegraph AI: Trigger Inline Completion`.
+- New settings: `safegraph.completion.modelId`, `safegraph.completion.maxTokens`,
+  `safegraph.completion.debounceMs`, `safegraph.completion.multiline`.
+- Shared `src/config/bedrock.ts` with `resolveBedrockApiKey`, `getBedrockModelConfig`,
+  and `getCompletionConfig` so chat, inline edit, and completion resolve the key/model the same way.
+- `stopSequences` and `topP` support in the Bedrock client.
+
+### Changed
+- **Tuned for Claude Haiku 4.5**: low-temperature, token-capped completion requests with
+  stop sequences and a concise, directive system prompt.
+- Completion now resolves the Bedrock API key from SecretStorage/`.env` (previously read a
+  non-existent `safegraph.bedrockApiKey` setting and never produced suggestions).
+- Inline edit reuses the shared key/model helpers instead of duplicating the logic.
+- Bumped Bedrock client `User-Agent` to `safegraph-ai-vscode/0.17.0`.
+
+### Fixed
+- Inline completion never ran because the provider was never registered and could not
+  obtain an API key.
+
 ## [0.11.3] - 2025-05-31
 
 ### Changed

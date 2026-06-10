@@ -1,11 +1,18 @@
 /**
  * Multi-Line Completer
- * Handles multi-line code completion
+ * Handles multi-line code completion with Claude Haiku 4.5.
  */
 
 import * as vscode from 'vscode';
 import { CodeContext } from './ContextAnalyzer';
-import { bedrockConverse, BedrockConverseOptions } from '../bedrock/bedrockClient';
+import { bedrockConverse } from '../bedrock/bedrockClient';
+import { getCompletionConfig, resolveBedrockApiKey } from '../config/bedrock';
+import {
+  buildCompletionPrompt,
+  buildCompletionSystemPrompt,
+  cleanCompletion,
+  COMPLETION_STOP_SEQUENCES
+} from './completionPrompt';
 
 export interface MultiLineSuggestion {
   lines: string[];
@@ -15,95 +22,87 @@ export interface MultiLineSuggestion {
 
 export class MultiLineCompleter {
   private output: vscode.OutputChannel;
+  private context: vscode.ExtensionContext;
 
-  constructor(output: vscode.OutputChannel) {
+  constructor(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
+    this.context = context;
     this.output = output;
   }
 
   public async generateMultiLineCompletion(
     context: CodeContext,
-    maxLines: number = 5
+    maxLines: number = 5,
+    token?: vscode.CancellationToken
   ): Promise<MultiLineSuggestion | null> {
-    const config = vscode.workspace.getConfiguration('safegraph');
-    const apiKey = await this.getApiKey();
-    
+    const cfg = getCompletionConfig();
+    const apiKey = await resolveBedrockApiKey(this.context, this.output);
     if (!apiKey) {
       return null;
     }
 
-    try {
-      const prompt = this.buildMultiLinePrompt(context, maxLines);
-      
-      const options: BedrockConverseOptions = {
-        region: config.get('region', 'us-east-1') as string,
-        modelId: config.get('modelId', 'anthropic.claude-3-sonnet-20240229-v1:0') as string,
-        apiKey,
-        maxTokens: 512,
-        temperature: 0.4
-      };
+    const abort = new AbortController();
+    if (token) {
+      token.onCancellationRequested(() => abort.abort());
+    }
 
-      const response = await bedrockConverse(prompt, options);
-      
-      const suggestion = this.parseMultiLineResponse(response.text);
-      
+    try {
+      const prompt = buildCompletionPrompt(
+        {
+          language: context.language,
+          prefix: context.prefix,
+          suffix: context.suffix,
+          currentLine: context.currentLine,
+          imports: context.imports
+        },
+        { multiline: true }
+      );
+
+      const response = await bedrockConverse(prompt, {
+        region: cfg.region,
+        modelId: cfg.modelId,
+        apiKey,
+        system: buildCompletionSystemPrompt(),
+        maxTokens: cfg.maxTokens,
+        temperature: 0.15,
+        topP: 0.9,
+        stopSequences: COMPLETION_STOP_SEQUENCES,
+        signal: abort.signal,
+        retries: 0
+      });
+
+      const suggestion = this.parseMultiLineResponse(response.text, context.currentLine, maxLines);
       if (suggestion && suggestion.lines.length > 0) {
         return suggestion;
       }
     } catch (error) {
-      this.output.appendLine(`[MultiLineCompleter] Error: ${error}`);
+      if (!abort.signal.aborted) {
+        this.output.appendLine(`[MultiLineCompleter] Error: ${error}`);
+      }
     }
 
     return null;
   }
 
-  private buildMultiLinePrompt(context: CodeContext, maxLines: number): string {
-    let prompt = `Complete the following ${context.language} code with up to ${maxLines} lines. Provide only the completion, no explanation.\n\n`;
-
-    // Add surrounding context
-    if (context.lineBefore) {
-      prompt += `Previous line: ${context.lineBefore}\n`;
+  private parseMultiLineResponse(
+    text: string,
+    currentLine: string,
+    maxLines: number
+  ): MultiLineSuggestion | null {
+    const cleaned = cleanCompletion(text, currentLine, true);
+    if (!cleaned) {
+      return null;
     }
 
-    prompt += `Current line: ${context.currentLine}\n`;
-
-    if (context.lineAfter) {
-      prompt += `Next line: ${context.lineAfter}\n`;
-    }
-
-    // Add scope information
-    if (context.functionScope) {
-      prompt += `Function: ${context.functionScope}\n`;
-    }
-
-    if (context.classScope) {
-      prompt += `Class: ${context.classScope}\n`;
-    }
-
-    prompt += `\nComplete the code starting from the current line:`;
-
-    return prompt;
-  }
-
-  private parseMultiLineResponse(text: string): MultiLineSuggestion | null {
-    // Remove markdown code blocks
-    let cleaned = text.replace(/```[\w]*\n?/g, '').trim();
-    
-    // Split into lines
-    const lines = cleaned.split('\n').filter(line => line.trim().length > 0);
-    
+    const lines = cleaned.split('\n').slice(0, Math.max(1, maxLines));
     if (lines.length === 0) {
       return null;
     }
 
+    const joined = lines.join('\n');
     return {
       lines,
-      cursorOffset: lines.join('\n').length,
+      cursorOffset: joined.length,
       confidence: 0.75
     };
-  }
-
-  private async getApiKey(): Promise<string> {
-    const config = vscode.workspace.getConfiguration('safegraph');
-    return config.get('bedrockApiKey', '') as string;
   }
 }
