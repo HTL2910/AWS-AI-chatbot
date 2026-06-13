@@ -12,6 +12,11 @@
 - Shared `src/config/bedrock.ts` with `resolveBedrockApiKey`, `getBedrockModelConfig`,
   and `getCompletionConfig` so chat, inline edit, and completion resolve the key/model the same way.
 - `stopSequences` and `topP` support in the Bedrock client.
+- **Direct file editing tool** — added `safegraph__apply_unified_diff` so the agent can apply focused unified diffs directly through local tool use.
+- Safe diff apply pipeline with preflight validation, stale hunk auto-repair, file snapshots, and keep/discard change sets.
+- Persistent tool evidence memory for active tasks, including tool name, input, compact result summary, evidence excerpt, and timestamp.
+- `tool` action entries in task history, allowing tool evidence to be logged alongside diff, command, file create, and file delete actions.
+- Rich applied-change summaries with file count, added/removed line counts, and per-file create/update/delete details.
 
 ### Changed
 - **Tuned for Claude Haiku 4.5**: low-temperature, token-capped completion requests with
@@ -20,10 +25,17 @@
   non-existent `safegraph.bedrockApiKey` setting and never produced suggestions).
 - Inline edit reuses the shared key/model helpers instead of duplicating the logic.
 - Bumped Bedrock client `User-Agent` to `safegraph-ai-vscode/0.17.0`.
+- Tool loop budget now counts only inspection tools (`read_file`, `search_files`, `list_files`, `run_safe_command`), not mutation or verification tools.
+- Follow-up task detection now considers recent tool evidence, improving continuity for short prompts such as "ok", "tiếp", and "fix it".
+- README now documents recent agent-loop, tool-memory, and direct-editing capabilities.
 
 ### Fixed
 - Inline completion never ran because the provider was never registered and could not
   obtain an API key.
+- Prevented repeated file inspection loops by forcing final synthesis after the inspection budget is reached.
+- Added fallback summaries when the model fails to produce a final answer after tool use.
+- Fixed noisy `Drop empty...` debug errors in the webview when VS Code sends an empty or `"."` drag/drop payload.
+- Improved drag/drop URI parsing for VS Code webview MIME types such as `application/vnd.code.uri-list`, `resourceurls`, and `codeeditors`.
 
 ## [0.11.3] - 2025-05-31
 
