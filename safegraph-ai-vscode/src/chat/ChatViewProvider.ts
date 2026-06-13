@@ -99,6 +99,7 @@ type AgentTaskState = {
   filesChanged: string[];
   commandsExecuted: { cmd: string; exitCode?: number; status: "success" | "error" | "canceled" }[];
   verification: { command: string; passed: boolean; outputTail: string; ts: number }[];
+  toolObservations: { tool: string; input: string; summary: string; evidence: string; ts: number }[];
   errors: string[];
   contextCache?: {
     key: string;
@@ -330,6 +331,8 @@ LOCAL TOOLING CONTRACT
 - Use safegraph__run_safe_command only for safe read-only inspection commands such as pwd, ls, rg, git status, or npm pkg get scripts.
 - Use safegraph__run_verification only for build/test/typecheck/lint verification commands after a change or when diagnosing a failure.
 - Use tools to read/search targeted files instead of asking for pasted content or relying on stale broad context.
+- Stop inspecting once you have enough evidence to answer. Do not call list/read/search repeatedly just to improve confidence.
+- After three to four tool batches, synthesize a useful answer from the evidence already collected and clearly state any remaining uncertainty.
 - Prefer smaller edits backed by tool evidence over long speculative diffs.
 
 LATEST USER REQUEST
@@ -655,6 +658,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           webviewView.webview.postMessage(thinking);
 
           const maxTaskLoops = 8;
+          const maxToolInspectionLoops = 2;
+          const maxToolCalls = 6;
           let isDone = false;
           let totalAcc = "";
 
@@ -662,6 +667,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             { role: "user", text: taskPrompt }
           ];
           const toolCallCounts = new Map<string, number>();
+          let toolInspectionLoops = 0;
+          let toolCallTotal = 0;
+          const toolObservationSummaries: string[] = [];
+          const toolObservationDetails: string[] = [];
+          let forcedSynthesis = false;
 
           const cfg2 = vscode.workspace.getConfiguration("safegraph");
           const mode: AutoRunMode = msg.agentMode ? "safe" : "ask";
@@ -870,8 +880,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                       } else {
                         resultText = JSON.stringify(result);
                       }
-                      toolStatuses[toolIndex] = { name: call.name, status: "success", detail: this.summarizeToolResult(resultText) };
+                      toolCallTotal += 1;
+                      const resultSummary = this.summarizeToolResult(resultText);
+                      toolStatuses[toolIndex] = { name: call.name, status: "success", detail: resultSummary };
                       postToolStatus(false);
+                      toolObservationSummaries.push(
+                        `${call.name}: ${resultSummary}`.slice(0, 220)
+                      );
+                      toolObservationDetails.push(
+                        [
+                          `Tool: ${call.name}`,
+                          `Input: ${this.stableStringify(call.input).slice(0, 500)}`,
+                          `Result:`,
+                          this.compactToolEvidence(resultText)
+                        ].join("\n")
+                      );
+                      await this.recordTaskToolObservation(call.name, call.input, resultSummary, resultText);
 
                       toolResults.push({
                         toolResult: {
@@ -894,6 +918,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   }
                   postToolStatus(true);
                   messages.push({ role: "user", content: toolResults });
+                  toolInspectionLoops += 1;
+                  if (toolInspectionLoops >= maxToolInspectionLoops || toolCallTotal >= maxToolCalls) {
+                    forcedSynthesis = true;
+                    toolConfig = undefined;
+                    messages.length = 0;
+                    messages.push({
+                      role: "user",
+                      text: [
+                        "You are now in final synthesis mode. Tool use is disabled.",
+                        "Produce a useful answer to the user's request immediately. Do not ask to inspect more files.",
+                        "If the evidence is enough, give the conclusion and concrete next steps. If it is incomplete, state the uncertainty briefly and still provide the best answer.",
+                        "",
+                        "LATEST USER REQUEST:",
+                        maskedQuestion,
+                        "",
+                        "COLLECTED TOOL EVIDENCE:",
+                        toolObservationDetails.slice(-12).join("\n\n---\n\n") || "(no usable evidence captured)",
+                        "",
+                        "Answer in Vietnamese. End with [DONE]."
+                      ].join("\n")
+                    });
+                    webviewView.webview.postMessage({
+                      type: "assistantMessage",
+                      id: msg.id,
+                      text: "Đã đọc đủ context. Đang tổng hợp câu trả lời, không gọi thêm tool...",
+                      ts: Date.now(),
+                      done: false
+                    } satisfies ExtensionToWebviewMessage);
+                  }
                   isToolLoop = true;
                   break; // break the chunk loop, and we will continue the main loop
                 }
@@ -1037,8 +1090,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
 
           if (!isDone && !String(totalAcc || "").trim()) {
-            totalAcc = "Stopped after reaching the tool loop limit. The agent repeated inspection/tool calls without producing a final answer.";
-          } else if (!isDone && toolCallCounts.size > 0) {
+            totalAcc = forcedSynthesis && toolObservationDetails.length
+              ? this.formatToolOnlyFallback(maskedQuestion, toolObservationSummaries)
+              : "Stopped after reaching the tool loop limit. The agent repeated inspection/tool calls without producing a final answer.";
+          } else if (!isDone && toolCallCounts.size > 0 && !forcedSynthesis) {
             totalAcc = `${String(totalAcc || "").trim()}\n\nStopped before completion because the agent reached the tool loop limit. Review the tool status panel above for the last completed tool calls.`.trim();
           }
 
@@ -1279,12 +1334,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return lines[0].slice(0, 120);
   }
 
+  private compactToolEvidence(resultText: string) {
+    const text = maskSensitive(String(resultText || "").trim());
+    if (!text) return "(empty result)";
+    const lines = text.split(/\r?\n/).filter((line) => line.trim()).slice(0, 120);
+    const compact = lines.join("\n");
+    if (compact.length <= 4000) return compact;
+    return `${compact.slice(0, 2400).trimEnd()}\n\n[...tool result compacted...]\n\n${compact.slice(-1200).trimStart()}`;
+  }
+
+  private formatToolOnlyFallback(question: string, observations: string[]) {
+    const evidence = observations.length
+      ? observations.slice(-10).map((item) => `- ${item}`).join("\n")
+      : "- Không có bằng chứng tool đủ rõ để tóm tắt.";
+    return [
+      "Mình đã dừng vòng đọc file để tránh việc agent chỉ inspect mãi mà không trả lời.",
+      "",
+      "Kết luận tạm thời từ context đã đọc:",
+      evidence,
+      "",
+      `Yêu cầu gốc: ${question}`,
+      "",
+      "Hướng cải thiện tiếp theo: giảm phạm vi câu hỏi hoặc attach/chỉ định file chính nếu bạn muốn agent sửa một phần cụ thể. Với lỗi hành vi đọc file lặp lại, extension hiện đã ép chuyển sang chế độ tổng hợp sau một lượng tool call ngắn.",
+      "",
+      "[DONE]"
+    ].join("\n");
+  }
+
   private toolCallSignature(name: unknown, input: unknown) {
     return `${String(name || "tool")} ${this.stableStringify(input)}`;
   }
 
   private stableStringify(value: unknown): string {
-    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (value === undefined) return "undefined";
+    if (value === null || typeof value !== "object") return JSON.stringify(value) ?? String(value);
     if (Array.isArray(value)) return `[${value.map((item) => this.stableStringify(item)).join(",")}]`;
     const obj = value as Record<string, unknown>;
     return `{${Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${this.stableStringify(obj[key])}`).join(",")}}`;
@@ -1341,6 +1424,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const task = raw as AgentTaskState;
     if (!task.id || !task.goal || !Array.isArray(task.steps)) return undefined;
     if (!Array.isArray(task.agentNotes)) task.agentNotes = [];
+    if (!Array.isArray(task.toolObservations)) task.toolObservations = [];
     return task.status === "active" ? task : undefined;
   }
 
@@ -1417,7 +1501,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!q) return true;
     if (/^(tiếp|continue|ok|đúng|làm đi|sửa tiếp|chạy tiếp|try again|fix it)/i.test(q)) return true;
     const current = this.keywordSet(q);
-    const previous = this.keywordSet(`${task.goal}\n${task.filesChanged.join("\n")}\n${task.errors.join("\n")}`);
+    const previous = this.keywordSet(
+      [
+        task.goal,
+        task.filesChanged.join("\n"),
+        task.errors.join("\n"),
+        (task.toolObservations || []).slice(-12).map((item) => `${item.tool} ${item.input} ${item.summary}`).join("\n")
+      ].join("\n")
+    );
     let overlap = 0;
     for (const key of current) {
       if (previous.has(key)) overlap += 1;
@@ -1444,6 +1535,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       filesChanged: [],
       commandsExecuted: [],
       verification: [],
+      toolObservations: [],
       errors: [],
       agentNotes: []
     };
@@ -1597,8 +1689,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           task.verification
             .slice(-4)
             .map((item) => `${item.command} => ${item.passed ? "pass" : "fail"}`)
-            .join("; ")
+          .join("; ")
       );
+    }
+    if (task.toolObservations?.length) {
+      lines.push("Previous tool evidence:");
+      for (const item of task.toolObservations.slice(-10)) {
+        lines.push(
+          `- ${item.tool} ${maskSensitive(item.input).slice(0, 180)} => ${maskSensitive(item.summary).slice(0, 260)}`
+        );
+        if (item.evidence) {
+          lines.push(`  Evidence: ${maskSensitive(item.evidence).slice(0, 500)}`);
+        }
+      }
     }
     if (task.errors.length) lines.push(`Open errors: ${task.errors.slice(-4).map((e) => maskSensitive(e).slice(0, 260)).join(" | ")}`);
     if (task.agentNotes.length) {
@@ -1669,6 +1772,58 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     task.updatedAt = Date.now();
     await this.persistTaskState();
+  }
+
+  private async recordTaskToolObservation(tool: unknown, input: unknown, summary: string, resultText: string) {
+    const task = this.activeTaskState;
+    if (!task) return;
+    if (!Array.isArray(task.toolObservations)) task.toolObservations = [];
+
+    const toolName = String(tool || "tool");
+    const inputText = this.compactToolInput(input);
+    const evidence = this.compactToolEvidenceForMemory(resultText);
+    const key = `${toolName}\n${inputText}`;
+    const existingIndex = task.toolObservations.findIndex((item) => `${item.tool}\n${item.input}` === key);
+    const observation = {
+      tool: toolName,
+      input: inputText,
+      summary: String(summary || "completed").slice(0, 300),
+      evidence,
+      ts: Date.now()
+    };
+
+    if (existingIndex >= 0) {
+      task.toolObservations.splice(existingIndex, 1);
+    }
+    task.toolObservations.push(observation);
+    this.historyManager?.logAction(
+      `Tool evidence: ${toolName} ${inputText.slice(0, 120)}`,
+      "tool",
+      evidence.slice(0, 6000)
+    );
+    if (task.toolObservations.length > 24) {
+      task.toolObservations = task.toolObservations.slice(-24);
+    }
+    task.updatedAt = Date.now();
+    await this.persistTaskState();
+  }
+
+  private compactToolInput(input: unknown) {
+    const text = this.stableStringify(input);
+    if (!text) return "{}";
+    return maskSensitive(text).slice(0, 500);
+  }
+
+  private compactToolEvidenceForMemory(resultText: string) {
+    const text = this.compactToolEvidence(resultText);
+    const lines = text.split(/\r?\n/).filter((line) => line.trim());
+    const informative = lines
+      .filter((line) => !/^[-=]{3,}$/.test(line.trim()))
+      .slice(0, 40)
+      .join("\n");
+    const compact = informative || text;
+    if (compact.length <= 1800) return compact;
+    return `${compact.slice(0, 1100).trimEnd()}\n[...evidence compacted...]\n${compact.slice(-500).trimStart()}`;
   }
 
   private async recordTaskError(error: string) {
