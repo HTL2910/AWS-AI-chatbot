@@ -28,16 +28,76 @@ The goal is practical: **faster project understanding, fewer wasted tokens, bett
 | Repository understanding | Uses active file, selection, tagged files, diagnostics, git state, file list, local RAG, and symbol-aware chunks | Strong |
 | Task continuity | Tracks goal, plan steps, changed files, commands, verification, and open errors across turns | Strong |
 | Token optimization | Uses rolling memory, context cache, selective RAG, attachment truncation, and compact web/docs bundles | Strong |
-| Code editing | Generates unified diffs, validates them, applies them to the workspace, and supports keep/discard review | Strong |
+| Code editing | Generates unified diffs, validates them via `safegraph__apply_unified_diff`, applies to workspace with auto-repair, and supports keep/discard review | Strong |
 | Inline completion | Claude Haiku 4.5 ghost-text completion with fill-in-the-middle context, debounce, and cancellation | Strong |
 | Verification loop | Runs safe build/test/typecheck/lint commands and feeds output back into the agent | Strong |
-| Tool use | Local tools: `read_file`, `search_files`, `list_files`, `run_verification` | Strong |
+| Tool use | Local tools: `read_file`, `search_files`, `list_files`, `apply_unified_diff`, `run_safe_command`, `run_verification` | Strong |
 | Diff review UI | Live applied changes, per-file review sections, copy diff, expand/collapse, keep/discard controls | Improving |
 | Evidence reporting | Final task output includes files changed, commands run, pass/fail status, and remaining risk | Strong |
 | Security posture | SecretStorage, local `.env`, workspace-scoped tools, command policy, no public ALB by default | Strong |
 | Semantic vector RAG | Provider scaffold exists for future turbovec-style retrieval | Planned |
 | Browser automation | Not included yet | Planned |
 | True multi-agent workers | Lightweight deterministic notes today; separate model workers not included yet | Planned |
+
+## Recent Updates
+
+### Direct File Editing Tool
+
+**New local tool: `safegraph__apply_unified_diff`**
+
+- Agent now applies focused unified diffs directly to workspace files after reading sufficient context.
+- The tool validates diffs through a safe pipeline:
+  - **Preflight check**: validates diff syntax and file paths before applying.
+  - **Auto-repair**: automatically repairs stale hunks when possible (e.g., if file changed since diff was generated).
+  - **Snapshot**: creates a backup of each file before modification.
+  - **Change set**: generates a per-file review UI so you can keep or discard each change.
+- After applying a diff, Safegraph AI records changed files in task state and recommends appropriate verification commands.
+- **Tool loop budget now separates inspection from mutation**: the budget counts only `read_file`, `search_files`, and `list_files` calls. Calls to `apply_unified_diff` and `run_verification` do not consume the inspection budget, allowing a full read → edit → verify cycle without hitting limits.
+- This enables the agent to work in tight loops: gather context, apply a focused fix, run a test, and iterate if needed.
+
+### Tool Loop Control
+
+**Stricter inspection budget to prevent tool call loops**
+
+- Safegraph AI now enforces a strict budget on inspection tool calls (`read_file`, `search_files`, `list_files`).
+- After a small number of inspection calls (typically 3–4 batches), the agent automatically enters **synthesis mode**.
+- In synthesis mode, further tool calls are disabled and the agent must summarize findings from evidence already collected.
+- If the model does not respond, Safegraph AI returns a fallback summary instead of leaving the UI stuck on tool tabs.
+- **Benefit**: prevents repetitive file reads and forces the agent to make decisions with available evidence, reducing wasted tokens and improving response time.
+
+### Persistent Tool Evidence Memory
+
+**Tool evidence is now recorded and reused across turns**
+
+- Safegraph AI records compact tool evidence for each active task.
+- Evidence includes:
+  - Tên công cụ
+  - Đầu vào công cụ, ví dụ: đường dẫn tệp hoặc truy vấn tìm kiếm
+  - Tóm tắt kết quả ngắn gọn
+  - Đoạn trích bằng chứng nhỏ gọn
+  - Dấu thời gian
+- Previous evidence is inserted into follow-up prompts for the same task, helping the agent remember what it has already checked.
+- This reduces repeated file reads and helps follow-up prompts continue from the previous investigation.
+
+### Task History Improvements
+
+**Tool evidence now integrated into task history**
+
+- Added support for `tool` action entries in the task history system.
+- Tool evidence is now logged via `HistoryManager` alongside existing diff, command, file create, and file delete actions.
+- Added scope checks for logging tool evidence to task history.
+
+### Better Agent Continuation
+
+**Same-task detection now considers recent tool evidence**
+
+- Same-task detection now also considers recent tool evidence, not just the initial goal, changed files, and errors.
+- This makes short follow-up messages like "ok", "continue", or related follow-ups more likely to continue the task context correctly.
+
+### User Experience Improvements
+
+- Chat giờ đây hiển thị thông báo trạng thái tổng hợp khi Safegraph AI đã đọc đủ ngữ cảnh và chuẩn bị câu trả lời cuối cùng.
+- Thay vì tiếp tục kiểm tra tệp một cách im lặng, agent giờ đây giải thích hoặc tóm tắt dựa trên ngữ cảnh đã thu thập.
 
 ## What It Can Do Today
 
@@ -89,6 +149,7 @@ The agent can use local, workspace-scoped tools:
 safegraph__read_file
 safegraph__search_files
 safegraph__list_files
+safegraph__apply_unified_diff
 safegraph__run_verification
 ```
 

@@ -330,6 +330,7 @@ LOCAL TOOLING CONTRACT
 - Prefer Safegraph local tools for incremental inspection: safegraph__read_file, safegraph__search_files, safegraph__list_files.
 - Use safegraph__run_safe_command only for safe read-only inspection commands such as pwd, ls, rg, git status, or npm pkg get scripts.
 - Use safegraph__run_verification only for build/test/typecheck/lint verification commands after a change or when diagnosing a failure.
+- Use safegraph__apply_unified_diff when the task requires editing files. Provide one focused unified diff with paths relative to the target root.
 - Use tools to read/search targeted files instead of asking for pasted content or relying on stale broad context.
 - Stop inspecting once you have enough evidence to answer. Do not call list/read/search repeatedly just to improve confidence.
 - After three to four tool batches, synthesize a useful answer from the evidence already collected and clearly state any remaining uncertainty.
@@ -668,7 +669,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           ];
           const toolCallCounts = new Map<string, number>();
           let toolInspectionLoops = 0;
-          let toolCallTotal = 0;
+          let toolInspectionCallTotal = 0;
           const toolObservationSummaries: string[] = [];
           const toolObservationDetails: string[] = [];
           let forcedSynthesis = false;
@@ -848,6 +849,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   postToolStatus(false);
 
                   let toolResults = [];
+                  let batchInspectionCalls = 0;
                   for (let toolIndex = 0; toolIndex < toolUses.length; toolIndex++) {
                     const tu = toolUses[toolIndex];
                     const call = tu.toolUse;
@@ -880,7 +882,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                       } else {
                         resultText = JSON.stringify(result);
                       }
-                      toolCallTotal += 1;
+                      if (this.isInspectionToolName(call.name)) {
+                        toolInspectionCallTotal += 1;
+                        batchInspectionCalls += 1;
+                      }
                       const resultSummary = this.summarizeToolResult(resultText);
                       toolStatuses[toolIndex] = { name: call.name, status: "success", detail: resultSummary };
                       postToolStatus(false);
@@ -918,8 +923,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                   }
                   postToolStatus(true);
                   messages.push({ role: "user", content: toolResults });
-                  toolInspectionLoops += 1;
-                  if (toolInspectionLoops >= maxToolInspectionLoops || toolCallTotal >= maxToolCalls) {
+                  if (batchInspectionCalls > 0) {
+                    toolInspectionLoops += 1;
+                  }
+                  if (toolInspectionLoops >= maxToolInspectionLoops || toolInspectionCallTotal >= maxToolCalls) {
                     forcedSynthesis = true;
                     toolConfig = undefined;
                     messages.length = 0;
@@ -1227,6 +1234,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
           }
         }
+      },
+      {
+        toolSpec: {
+          name: "safegraph__apply_unified_diff",
+          description: "Apply a focused unified diff to workspace files. Use this to edit files after inspecting enough context. Paths must be relative to the target root. Safegraph preflights the diff, repairs stale hunks when possible, snapshots changed files, and shows a keep/discard change set.",
+          inputSchema: {
+            json: {
+              type: "object",
+              properties: {
+                diff: { type: "string", description: "Unified diff text, optionally fenced as ```diff. File paths must be relative to the target root." },
+                summary: { type: "string", description: "Short user-facing summary of the intended change." }
+              },
+              required: ["diff"]
+            }
+          }
+        }
       }
     ];
   }
@@ -1243,9 +1266,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return await this.localRunSafeCommand(input, cwd, webview);
       case "run_verification":
         return await this.localRunVerification(input, cwd, webview);
+      case "apply_unified_diff":
+        return await this.localApplyUnifiedDiff(input, targetRoot, webview);
       default:
         throw new Error(`Unknown Safegraph local tool: ${toolName}`);
     }
+  }
+
+  private isInspectionToolName(name: unknown) {
+    return /^safegraph__(read_file|search_files|list_files|run_safe_command)$/.test(String(name || ""));
   }
 
   private localToolRoot(targetRoot?: vscode.Uri) {
@@ -1416,6 +1445,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       throw new Error("Refusing to run a non-verification command through run_verification.");
     }
     return await this.runLocalCommandTool(command, cwd, webview);
+  }
+
+  private async localApplyUnifiedDiff(input: any, targetRoot: vscode.Uri | undefined, webview: vscode.Webview) {
+    const raw = String(input?.diff || "").trim();
+    if (!raw) throw new Error("Missing unified diff.");
+    const extracted = extractDiffBlocks(raw);
+    const diff = extracted.length > 0 ? extracted.join("\n\n") : raw;
+    if (!diff.includes("--- ") || !diff.includes("+++ ")) {
+      throw new Error("Expected a valid unified diff with --- and +++ file headers.");
+    }
+
+    const summary = String(input?.summary || "Tool-applied workspace changes").slice(0, 240);
+    const changeSetId = `tool-apply-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const appliedDiff = await this.applyDiffWithRepair(diff, summary, targetRoot, changeSetId);
+    if (!appliedDiff.trim()) {
+      return "Diff was empty, already applied, or repaired to a no-op. No workspace changes were made.";
+    }
+
+    await this.recordTaskDiffApplied(appliedDiff);
+    webview.postMessage({
+      type: "autoAppliedChangeSet",
+      id: changeSetId,
+      diff: appliedDiff,
+      summary: this.summarizeAppliedDiff(appliedDiff),
+      ts: Date.now()
+    } satisfies ExtensionToWebviewMessage);
+
+    return [
+      "Workspace diff applied successfully.",
+      `Change set id: ${changeSetId}`,
+      `Summary: ${this.summarizeAppliedDiff(appliedDiff)}`,
+      "The user can keep or discard the applied change set in the Safegraph UI.",
+      "Next step: run safe verification if a relevant build/test/typecheck command is available."
+    ].join("\n");
   }
 
   private loadPersistedTaskState() {
