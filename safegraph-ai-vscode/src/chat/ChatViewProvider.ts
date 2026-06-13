@@ -1475,7 +1475,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return [
       "Workspace diff applied successfully.",
       `Change set id: ${changeSetId}`,
+      `Intent: ${summary}`,
       `Summary: ${this.summarizeAppliedDiff(appliedDiff)}`,
+      this.formatAppliedDiffDetails(appliedDiff),
       "The user can keep or discard the applied change set in the Safegraph UI.",
       "Next step: run safe verification if a relevant build/test/typecheck command is available."
     ].join("\n");
@@ -2568,21 +2570,73 @@ ${diff}
   }
 
   private summarizeAppliedDiff(diff: string) {
-    const patches = parseUnifiedDiff(diff);
+    const stats = this.appliedDiffStats(diff);
+    const patches = stats.files;
     if (patches.length === 0) return "No file changes.";
-    const counts = patches.reduce(
-      (acc, patch) => {
-        acc[patch.kind] += 1;
+    const parts = [
+      stats.created ? `${stats.created} created` : "",
+      stats.updated ? `${stats.updated} updated` : "",
+      stats.deleted ? `${stats.deleted} deleted` : ""
+    ].filter(Boolean);
+    const fileList = patches
+      .slice(0, 4)
+      .map((item) => `${item.path} (+${item.added}/-${item.removed})`)
+      .join(", ");
+    const more = patches.length > 4 ? `, +${patches.length - 4} more` : "";
+    return `${patches.length} file${patches.length === 1 ? "" : "s"} applied (+${stats.added}/-${stats.removed}${parts.length ? `; ${parts.join(", ")}` : ""}): ${fileList}${more}.`;
+  }
+
+  private formatAppliedDiffDetails(diff: string) {
+    const stats = this.appliedDiffStats(diff);
+    if (stats.files.length === 0) return "Changed files: (none)";
+    return [
+      `Changed files: ${stats.files.length}`,
+      `Lines changed: +${stats.added} / -${stats.removed}`,
+      ...stats.files.slice(0, 12).map((item) => {
+        const action = item.kind === "create" ? "created" : item.kind === "delete" ? "deleted" : "updated";
+        return `- ${item.path}: ${action}, +${item.added} / -${item.removed}`;
+      }),
+      stats.files.length > 12 ? `- ...${stats.files.length - 12} more file(s)` : ""
+    ].filter(Boolean).join("\n");
+  }
+
+  private appliedDiffStats(diff: string) {
+    const patches = parseUnifiedDiff(diff);
+    const files = patches.map((patch) => {
+      let added = 0;
+      let removed = 0;
+      for (const hunk of patch.hunks || []) {
+        for (const line of hunk.lines || []) {
+          if (line.kind === "add") added += 1;
+          if (line.kind === "del") removed += 1;
+        }
+      }
+      return {
+        path: patch.filePath || patch.newPath || patch.oldPath,
+        kind: patch.kind,
+        added,
+        removed
+      };
+    });
+    return files.reduce(
+      (acc, item) => {
+        acc.added += item.added;
+        acc.removed += item.removed;
+        if (item.kind === "create") acc.created += 1;
+        else if (item.kind === "delete") acc.deleted += 1;
+        else acc.updated += 1;
+        acc.files.push(item);
         return acc;
       },
-      { create: 0, update: 0, delete: 0 }
+      {
+        added: 0,
+        removed: 0,
+        created: 0,
+        updated: 0,
+        deleted: 0,
+        files: [] as { path: string; kind: "update" | "create" | "delete"; added: number; removed: number }[]
+      }
     );
-    const parts = [
-      counts.create ? `${counts.create} created` : "",
-      counts.update ? `${counts.update} updated` : "",
-      counts.delete ? `${counts.delete} deleted` : ""
-    ].filter(Boolean);
-    return `${patches.length} file${patches.length === 1 ? "" : "s"} applied${parts.length ? ` (${parts.join(", ")})` : ""}.`;
   }
 
   private async snapshotFilesForDiff(diff: string, targetRoot?: vscode.Uri): Promise<FileSnapshot[]> {

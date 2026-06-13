@@ -1453,7 +1453,15 @@ function renderEnhancedDiff(diffText) {
 
   function parseDroppedUris(dataTransfer) {
     if (!dataTransfer || typeof dataTransfer.getData !== "function") return [];
-    
+
+    const normalizeDroppedLine = (line) => {
+      const value = String(line || "").trim();
+      if (!value || value === "." || value === "./" || value === "file://.") return "";
+      if (value.startsWith("file:") || value.startsWith("vscode-remote:")) return value;
+      if (value.startsWith("/")) return value;
+      return "";
+    };
+
     try {
       const explorerData = dataTransfer.getData("application/vnd.code.tree.workspaceExplorer");
       if (explorerData) {
@@ -1464,22 +1472,36 @@ function renderEnhancedDiff(diffText) {
             if (item && item.scheme && item.path) return `${item.scheme}://${item.authority || ''}${item.path}`;
             if (item && item.path) return `file://${item.path}`;
             return "";
-          }).filter(Boolean);
+          }).map(normalizeDroppedLine).filter(Boolean);
         }
       }
     } catch (e) {
       console.error("Failed to parse workspaceExplorer data", e);
     }
 
-    const raw =
-      dataTransfer.getData("text/uri-list") ||
-      dataTransfer.getData("text/plain") ||
-      dataTransfer.getData("text");
-    return String(raw || "")
+    const rawParts = [];
+    const preferredTypes = [
+      "text/uri-list",
+      "application/vnd.code.uri-list",
+      "resourceurls",
+      "codeeditors",
+      "text/plain",
+      "text"
+    ];
+    for (const type of preferredTypes) {
+      try {
+        const value = dataTransfer.getData(type);
+        if (value) rawParts.push(value);
+      } catch {}
+    }
+
+    return rawParts
+      .join("\n")
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter((line) => line && !line.startsWith("#"))
-      .filter((line) => line.startsWith("file:") || line.startsWith("/") || line.startsWith("vscode-remote:"));
+      .map(normalizeDroppedLine)
+      .filter(Boolean);
   }
 
   if (fileInputEl) {
@@ -1741,15 +1763,7 @@ function renderEnhancedDiff(diffText) {
       return;
     }
 
-    // Debug signal in UI (better than silent no-op)
-    const types = Array.from(e.dataTransfer.types || []).join(", ");
-    let debugText = "";
-    try { debugText = e.dataTransfer.getData("text/plain") || ""; } catch (e) {}
-    let uriList = "";
-    try { uriList = e.dataTransfer.getData("text/uri-list") || ""; } catch (e) {}
-    let treeData = "";
-    try { treeData = e.dataTransfer.getData("application/vnd.code.tree.workspaceExplorer") || ""; } catch (e) {}
-    appendMessage("error", `Drop empty. Types: ${types}. Plain: ${debugText}. URI: ${uriList}. Tree: ${treeData}`);
+    setStatus("Drop ignored", "idle");
   }
 
   // Keep local listeners (they help with consistent leave depth), but global listeners below

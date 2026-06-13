@@ -52,6 +52,7 @@ The goal is practical: **faster project understanding, fewer wasted tokens, bett
   - **Snapshot**: creates a backup of each file before modification.
   - **Change set**: generates a per-file review UI so you can keep or discard each change.
 - After applying a diff, Safegraph AI records changed files in task state and recommends appropriate verification commands.
+- Applied change sets now include a clear summary with file count, added/removed line counts, and per-file create/update/delete details.
 - **Tool loop budget now separates inspection from mutation**: the budget counts only `read_file`, `search_files`, and `list_files` calls. Calls to `apply_unified_diff` and `run_verification` do not consume the inspection budget, allowing a full read → edit → verify cycle without hitting limits.
 - This enables the agent to work in tight loops: gather context, apply a focused fix, run a test, and iterate if needed.
 
