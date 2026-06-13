@@ -39,7 +39,7 @@ export class HistoryManager {
    */
   logAction(
     description: string,
-    actionType: 'diff' | 'command' | 'file_create' | 'file_delete',
+    actionType: 'diff' | 'command' | 'file_create' | 'file_delete' | 'tool',
     content?: string,
     exitCode?: number,
     output?: string

@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Báo cáo đánh giá Safegraph AI</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --surface: #ffffff;
+      --text: #18202a;
+      --muted: #5c6773;
+      --line: #d9dee5;
+      --good: #1b7f4d;
+      --warn: #9a6200;
+      --risk: #b42318;
+      --info: #2459a6;
+      --soft-good: #e9f7ef;
+      --soft-warn: #fff5df;
+      --soft-risk: #fdeceb;
+      --soft-info: #edf3ff;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+    }
+
+    .page {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 32px 0 48px;
+    }
+
+    header {
+      display: grid;
+      gap: 18px;
+      padding: 28px 0 22px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .eyebrow {
+      margin: 0;
+      color: var(--info);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 820px;
+      font-size: clamp(34px, 5vw, 58px);
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+
+    .summary {
+      max-width: 860px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 2px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    main {
+      display: grid;
+      gap: 22px;
+      margin-top: 26px;
+    }
+
+    section {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 22px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 18px 0 8px;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    ul, ol {
+      margin: 0;
+      padding-left: 20px;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    code {
+      padding: 2px 5px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #f3f5f7;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: .92em;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .metric {
+      min-height: 118px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+    }
+
+    .metric strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status {
+      display: grid;
+      gap: 12px;
+    }
+
+    .callout {
+      padding: 14px 16px;
+      border-left: 4px solid var(--info);
+      border-radius: 6px;
+      background: var(--soft-info);
+    }
+
+    .callout.good {
+      border-color: var(--good);
+      background: var(--soft-good);
+    }
+
+    .callout.warn {
+      border-color: var(--warn);
+      background: var(--soft-warn);
+    }
+
+    .callout.risk {
+      border-color: var(--risk);
+      background: var(--soft-risk);
+    }
+
+    .callout strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eef1f5;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .tag {
+      display: inline-flex;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .tag.good {
+      color: var(--good);
+      background: var(--soft-good);
+    }
+
+    .tag.warn {
+      color: var(--warn);
+      background: var(--soft-warn);
+    }
+
+    .tag.risk {
+      color: var(--risk);
+      background: var(--soft-risk);
+    }
+
+    .refs {
+      display: grid;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 820px) {
+      .page {
+        width: min(100% - 24px, 1120px);
+        padding-top: 18px;
+      }
+
+      section {
+        padding: 18px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <p class="eyebrow">Báo cáo kỹ thuật</p>
+      <h1>Đánh giá hiện trạng Safegraph AI</h1>
+      <p class="summary">
+        Safegraph AI hiện có lõi extension VS Code hoạt động được cho chat, Bedrock integration,
+        inline edit/completion, repository context và task state cơ bản. Tuy nhiên, các claim về
+        multi-agent, artifact verification, async execution và project-wide refactoring đang vượt
+        quá mức tích hợp runtime thực tế.
+      </p>
+      <div class="meta">
+        <span class="pill">Ngày đánh giá: 2026-06-13</span>
+        <span class="pill">Repo: AWS-AI-chatbot</span>
+        <span class="pill">Module: safegraph-ai-vscode</span>
+        <span class="pill">Phiên bản code: 0.17.0</span>
+      </div>
+    </header>
+
+    <main>
+      <section>
+        <h2>Kết luận điều hành</h2>
+        <div class="status">
+          <div class="callout good">
+            <strong>Điểm tốt</strong>
+            Code TypeScript compile sạch, test hiện có pass, VSIX 0.17.0 đã tồn tại, core chat provider có nhiều cơ chế thực dụng cho context, diff/apply và task state.
+          </div>
+          <div class="callout warn">
+            <strong>Điểm cần thận trọng</strong>
+            Sản phẩm nên được định vị là beta/dev-tool nội bộ. README và package đang mô tả nhiều tính năng như đã hoàn chỉnh trong khi một phần còn là scaffold hoặc chưa nối vào activation path.
+          </div>
+          <div class="callout risk">
+            <strong>Rủi ro ưu tiên</strong>
+            Chính sách auto-run command ở chế độ <code>safe</code> cần siết lại trước khi dùng trên repository nhạy cảm.
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Kết quả kiểm tra</h2>
+        <div class="grid">
+          <div class="metric">
+            <strong>Pass</strong>
+            <span><code>npm run typecheck</code> chạy thành công.</span>
+          </div>
+          <div class="metric">
+            <strong>33/33</strong>
+            <span><code>npm run test:ci</code> pass 4 test suites, 33 tests.</span>
+          </div>
+          <div class="metric">
+            <strong>2.41%</strong>
+            <span>Coverage statement tổng thể rất thấp; runtime extension gần như chưa được test.</span>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Hiện trạng tính năng</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Nhóm tính năng</th>
+              <th>Đánh giá</th>
+              <th>Ghi chú</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Chat sidebar và Bedrock</td>
+              <td><span class="tag good">Khả dụng</span></td>
+              <td>Có <code>ChatViewProvider</code>, context builder, Bedrock client, history và task state.</td>
+            </tr>
+            <tr>
+              <td>Inline edit/completion</td>
+              <td><span class="tag good">Khả dụng</span></td>
+              <td>Provider inline completion được register trong activation path.</td>
+            </tr>
+            <tr>
+              <td>Repository context/RAG</td>
+              <td><span class="tag good">Một phần tốt</span></td>
+              <td>Có local repository context và cấu hình giới hạn; semantic vector RAG vẫn disabled/scaffolded.</td>
+            </tr>
+            <tr>
+              <td>Multi-agent orchestration</td>
+              <td><span class="tag warn">Chưa tích hợp đầy đủ</span></td>
+              <td>Có class AgentManager/Orchestrator, nhưng Agent Manager view/command chưa được register trong <code>activate()</code>.</td>
+            </tr>
+            <tr>
+              <td>Artifact verification</td>
+              <td><span class="tag warn">Scaffold</span></td>
+              <td>Có generator/store/verifier, nhưng Artifact Viewer chưa có activation path rõ ràng.</td>
+            </tr>
+            <tr>
+              <td>Safe command execution</td>
+              <td><span class="tag risk">Cần sửa</span></td>
+              <td>Policy hiện có thể allow shell operators trong mode <code>safe</code> nếu không match regex nguy hiểm.</td>
+            </tr>
+            <tr>
+              <td>Release/documentation</td>
+              <td><span class="tag warn">Lệch</span></td>
+              <td><code>package.json</code> là 0.17.0 nhưng README vẫn ghi 0.16.0.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Điểm mạnh kỹ thuật</h2>
+        <ul>
+          <li>Extension compile sạch với TypeScript và có VSIX <code>safegraph-ai-0.17.0.vsix</code>.</li>
+          <li>Chat provider có task state, status bar, local workspace tools, command feedback và context handling.</li>
+          <li>Local file tools có kiểm tra path escape workspace, giúp giảm rủi ro đọc file ngoài project.</li>
+          <li>Inline completion có cấu hình enable/disable, manual/automatic trigger và debounce.</li>
+          <li>Prompt hệ thống trong agent chat có nhiều quy tắc thực dụng cho coding workflow, frontend, backend và verification.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Rủi ro và khoảng trống</h2>
+        <ol>
+          <li>
+            <strong>Command policy quá rộng.</strong>
+            Trong mode <code>safe</code>, shell chaining/redirection không tự động bị hỏi lại nếu không match danh sách regex nguy hiểm.
+          </li>
+          <li>
+            <strong>Contribution points chưa khớp runtime.</strong>
+            <code>package.json</code> khai báo <code>openAgentManager</code>, <code>openArtifactViewer</code>, <code>openAuditLog</code> nhưng activation code chưa register đầy đủ.
+          </li>
+          <li>
+            <strong>README overclaim.</strong>
+            Tài liệu mô tả multi-agent/artifact/background execution như tính năng hoàn chỉnh, trong khi code hiện giống scaffold hoặc tích hợp một phần.
+          </li>
+          <li>
+            <strong>Test coverage thấp.</strong>
+            Build pass chưa đủ để tin vào behavior runtime của VS Code extension, diff apply, Bedrock error handling và command runner.
+          </li>
+          <li>
+            <strong>Artifact parsing dễ lỗi.</strong>
+            Generator parse trực tiếp <code>JSON.parse(response.text)</code>, dễ fail khi model trả markdown hoặc text phụ.
+          </li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Kế hoạch ưu tiên</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Ưu tiên</th>
+              <th>Việc cần làm</th>
+              <th>Lý do</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>P0</td>
+              <td>Siết <code>commandPolicy</code>: safe mode chỉ allow allowlist rõ ràng, shell operator/redirection mặc định ask.</td>
+              <td>Giảm rủi ro phá file, leak secret hoặc chạy command ngoài ý muốn.</td>
+            </tr>
+            <tr>
+              <td>P0</td>
+              <td>Đồng bộ README/package/release notes lên 0.17.0 và tách rõ implemented vs planned.</td>
+              <td>Tránh hiểu nhầm năng lực sản phẩm.</td>
+            </tr>
+            <tr>
+              <td>P1</td>
+              <td>Register hoặc gỡ các command/view chưa dùng: Agent Manager, Artifact Viewer, Audit Log.</td>
+              <td>Làm extension khớp với manifest và giảm lỗi command không tồn tại.</td>
+            </tr>
+            <tr>
+              <td>P1</td>
+              <td>Thêm integration tests cho activation, command registration, command policy, diff apply/preflight.</td>
+              <td>Tăng độ tin cậy của runtime path quan trọng.</td>
+            </tr>
+            <tr>
+              <td>P2</td>
+              <td>Làm artifact parser bền hơn bằng JSON extraction, schema validation và retry prompt.</td>
+              <td>Giảm lỗi do model output không đúng JSON thuần.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Bằng chứng tham chiếu</h2>
+        <div class="refs">
+          <span><code>safegraph-ai-vscode/package.json</code>: version 0.17.0, contribution points cho commands/views.</span>
+          <span><code>safegraph-ai-vscode/README.md</code>: vẫn ghi current release và hướng dẫn cài 0.16.0.</span>
+          <span><code>safegraph-ai-vscode/src/extension.ts</code>: activation path hiện register chat, history, log, inline edit và inline completion.</span>
+          <span><code>safegraph-ai-vscode/src/terminal/commandPolicy.ts</code>: logic quyết định auto-run command.</span>
+          <span><code>safegraph-ai-vscode/src/artifact/ArtifactGenerator.ts</code>: parse trực tiếp model response bằng <code>JSON.parse</code>.</span>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

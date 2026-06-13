@@ -7,6 +7,8 @@ export type BedrockConverseOptions = {
   system?: string;
   maxTokens?: number;
   temperature?: number;
+  topP?: number;
+  stopSequences?: string[];
   signal?: AbortSignal;
   retries?: number;
   toolConfig?: any;
@@ -44,12 +46,19 @@ function buildPayload(
   input: string | { role: "user" | "assistant"; text?: string; content?: any[] }[],
   options: BedrockConverseOptions
 ) {
+  const inferenceConfig: any = {
+    maxTokens: options.maxTokens ?? 2048,
+    temperature: options.temperature ?? 0.3
+  };
+  if (typeof options.topP === "number") {
+    inferenceConfig.topP = options.topP;
+  }
+  if (options.stopSequences && options.stopSequences.length > 0) {
+    inferenceConfig.stopSequences = options.stopSequences.slice(0, 4);
+  }
   const payloadObj: any = {
     messages: normalizeMessages(input),
-    inferenceConfig: {
-      maxTokens: options.maxTokens ?? 2048,
-      temperature: options.temperature ?? 0.3
-    }
+    inferenceConfig
   };
   if (options.system?.trim()) {
     payloadObj.system = [{ text: options.system.trim() }];
@@ -171,7 +180,7 @@ export async function bedrockConverse(
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(payload),
-          "User-Agent": "safegraph-ai-vscode/0.12.1"
+          "User-Agent": "safegraph-ai-vscode/0.17.0"
         },
         timeout: 60000
       };
@@ -253,7 +262,7 @@ export async function bedrockConverseStream(
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(payload),
-          "User-Agent": "safegraph-ai-vscode/0.12.1"
+          "User-Agent": "safegraph-ai-vscode/0.17.0"
         },
         timeout: 60000
       };

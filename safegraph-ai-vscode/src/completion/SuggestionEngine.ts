@@ -1,11 +1,18 @@
 /**
  * Suggestion Engine
- * Generates AI-powered code suggestions
+ * Generates Claude Haiku 4.5 powered inline code suggestions.
  */
 
 import * as vscode from 'vscode';
 import { CodeContext } from './ContextAnalyzer';
-import { bedrockConverse, BedrockConverseOptions } from '../bedrock/bedrockClient';
+import { bedrockConverse } from '../bedrock/bedrockClient';
+import { getCompletionConfig, resolveBedrockApiKey } from '../config/bedrock';
+import {
+  buildCompletionPrompt,
+  buildCompletionSystemPrompt,
+  cleanCompletion,
+  COMPLETION_STOP_SEQUENCES
+} from './completionPrompt';
 
 export interface Suggestion {
   text: string;
@@ -15,89 +22,102 @@ export interface Suggestion {
 
 export class SuggestionEngine {
   private output: vscode.OutputChannel;
+  private context: vscode.ExtensionContext;
   private cache: Map<string, { suggestions: Suggestion[]; timestamp: number }> = new Map();
   private cacheTimeout: number = 60000; // 1 minute
 
-  constructor(output: vscode.OutputChannel) {
+  constructor(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
+    this.context = context;
     this.output = output;
   }
 
-  public async generateSuggestions(context: CodeContext): Promise<Suggestion[]> {
+  public async generateSuggestions(
+    context: CodeContext,
+    token?: vscode.CancellationToken
+  ): Promise<Suggestion[]> {
+    // Don't suggest inside comments or strings.
+    if (context.isInsideComment || context.isInsideString) {
+      return [];
+    }
+
     const cacheKey = this.generateCacheKey(context);
     const cached = this.cache.get(cacheKey);
-
     if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
       return cached.suggestions;
     }
 
     const suggestions: Suggestion[] = [];
 
-    // Generate different types of suggestions based on context
-    if (context.isInsideComment || context.isInsideString) {
-      // Don't suggest inside comments or strings
-      return [];
-    }
-
-    // Generate completion suggestions
-    const completion = await this.generateCompletion(context);
-    if (completion) {
-      suggestions.push(completion);
-    }
-
-    // Generate snippet suggestions for certain patterns
-    const snippet = await this.generateSnippet(context);
+    // Fast local snippet heuristics (no network round-trip).
+    const snippet = this.generateSnippet(context);
     if (snippet) {
       suggestions.push(snippet);
     }
 
-    // Cache the results
-    this.cache.set(cacheKey, {
-      suggestions,
-      timestamp: Date.now()
-    });
+    const completion = await this.generateCompletion(context, token);
+    if (completion) {
+      suggestions.unshift(completion);
+    }
 
+    this.cache.set(cacheKey, { suggestions, timestamp: Date.now() });
     return suggestions;
   }
 
-  private async generateCompletion(context: CodeContext): Promise<Suggestion | null> {
-    const config = vscode.workspace.getConfiguration('safegraph');
-    const apiKey = await vscode.workspace.getConfiguration('safegraph').get('bedrockApiKey') as string;
-    
+  private async generateCompletion(
+    context: CodeContext,
+    token?: vscode.CancellationToken
+  ): Promise<Suggestion | null> {
+    const cfg = getCompletionConfig();
+    const apiKey = await resolveBedrockApiKey(this.context, this.output);
     if (!apiKey) {
+      this.output.appendLine('[SuggestionEngine] No Bedrock API key available; skipping completion.');
       return null;
     }
 
-    try {
-      const prompt = this.buildCompletionPrompt(context);
-      
-      const options: BedrockConverseOptions = {
-        region: config.get('region', 'us-east-1') as string,
-        modelId: config.get('modelId', 'anthropic.claude-3-sonnet-20240229-v1:0') as string,
-        apiKey,
-        maxTokens: 256,
-        temperature: 0.3
-      };
+    const abort = new AbortController();
+    if (token) {
+      token.onCancellationRequested(() => abort.abort());
+    }
 
-      const response = await bedrockConverse(prompt, options);
-      
-      const completionText = this.extractCompletion(response.text);
-      
+    try {
+      const prompt = buildCompletionPrompt(
+        {
+          language: context.language,
+          prefix: context.prefix,
+          suffix: context.suffix,
+          currentLine: context.currentLine,
+          imports: context.imports
+        },
+        { multiline: cfg.multiline }
+      );
+
+      const response = await bedrockConverse(prompt, {
+        region: cfg.region,
+        modelId: cfg.modelId,
+        apiKey,
+        system: buildCompletionSystemPrompt(),
+        maxTokens: cfg.maxTokens,
+        temperature: 0.1,
+        topP: 0.9,
+        stopSequences: COMPLETION_STOP_SEQUENCES,
+        signal: abort.signal,
+        retries: 0
+      });
+
+      const completionText = cleanCompletion(response.text, context.currentLine, cfg.multiline);
       if (completionText) {
-        return {
-          text: completionText,
-          confidence: 0.8,
-          type: 'completion'
-        };
+        return { text: completionText, confidence: 0.8, type: 'completion' };
       }
     } catch (error) {
-      this.output.appendLine(`[SuggestionEngine] Completion error: ${error}`);
+      if (!abort.signal.aborted) {
+        this.output.appendLine(`[SuggestionEngine] Completion error: ${error}`);
+      }
     }
 
     return null;
   }
 
-  private async generateSnippet(context: CodeContext): Promise<Suggestion | null> {
-    // Check for common patterns that suggest snippets
+  private generateSnippet(context: CodeContext): Suggestion | null {
     const patterns = [
       { regex: /for\s*$/, snippet: ' (let i = 0; i < length; i++) {\n    \n}' },
       { regex: /if\s*$/, snippet: ' (condition) {\n    \n}' },
@@ -109,55 +129,16 @@ export class SuggestionEngine {
 
     for (const pattern of patterns) {
       if (pattern.regex.test(context.currentLine)) {
-        return {
-          text: pattern.snippet,
-          confidence: 0.9,
-          type: 'snippet'
-        };
+        return { text: pattern.snippet, confidence: 0.5, type: 'snippet' };
       }
     }
 
     return null;
   }
 
-  private buildCompletionPrompt(context: CodeContext): string {
-    let prompt = `Complete the following ${context.language} code. Provide only the completion, no explanation.\n\n`;
-
-    // Add context
-    if (context.imports.length > 0) {
-      prompt += `Imports: ${context.imports.join(', ')}\n`;
-    }
-
-    if (context.variables.length > 0) {
-      prompt += `Variables in scope: ${context.variables.join(', ')}\n`;
-    }
-
-    if (context.functions.length > 0) {
-      prompt += `Functions available: ${context.functions.join(', ')}\n`;
-    }
-
-    // Add the code to complete
-    prompt += `\nCode:\n${context.prefix}`;
-
-    return prompt;
-  }
-
-  private extractCompletion(text: string): string {
-    // Extract the completion from the AI response
-    // Remove any markdown code blocks
-    let completion = text.replace(/```[\w]*\n?/g, '').trim();
-    
-    // Remove any explanatory text
-    completion = completion.split('\n\n')[0];
-    
-    // Ensure it doesn't start with a newline
-    completion = completion.replace(/^\n+/, '');
-    
-    return completion;
-  }
-
   private generateCacheKey(context: CodeContext): string {
-    return `${context.language}_${context.currentLine}_${context.lineBefore}`;
+    const prefixTail = context.prefix.slice(-200);
+    return `${context.language}:${prefixTail}`;
   }
 
   public clearCache(): void {

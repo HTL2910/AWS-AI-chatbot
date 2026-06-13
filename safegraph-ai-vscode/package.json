@@ -1,12 +1,12 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.16.0",
-  "description": "Multi-agent AI development platform with autonomous coding, artifact verification, and project-wide refactoring.",
+  "displayName": "Safegraph AI v0.17.0",
+  "description": "Claude Haiku 4.5 powered AI coding IDE for VS Code: inline ghost-text completion, agentic chat, inline edits, and project-wide refactoring.",
   "repository": {
     "type": "git",
     "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
   },
-  "version": "0.16.0",
+  "version": "0.17.0",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
@@ -26,7 +26,9 @@
     "onCommand:safegraph.inlineEdit",
     "onCommand:safegraph.showHistory",
     "onCommand:safegraph.openAgentManager",
-    "onCommand:safegraph.openArtifactViewer"
+    "onCommand:safegraph.openArtifactViewer",
+    "onCommand:safegraph.toggleCompletion",
+    "onCommand:safegraph.triggerCompletion"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -78,6 +80,14 @@
       {
         "command": "safegraph.openArtifactViewer",
         "title": "Safegraph AI: Open Artifact Viewer"
+      },
+      {
+        "command": "safegraph.toggleCompletion",
+        "title": "Safegraph AI: Toggle Inline Completion"
+      },
+      {
+        "command": "safegraph.triggerCompletion",
+        "title": "Safegraph AI: Trigger Inline Completion"
       }
     ],
     "keybindings": [
@@ -101,7 +111,7 @@
       }
     ],
     "configuration": {
-      "title": "Safegraph AI v0.16.0",
+      "title": "Safegraph AI v0.17.0",
       "properties": {
         "safegraph.autoRun": {
           "type": "string",
@@ -121,7 +131,7 @@
         "safegraph.modelId": {
           "type": "string",
           "default": "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623",
-          "description": "Bedrock model identifier or inference profile ARN."
+          "description": "Bedrock model identifier or inference profile ARN. Defaults to a profile that resolves to Claude Haiku 4.5. For direct invocation use anthropic.claude-haiku-4-5-20251001-v1:0 (or a regional/global inference profile of it)."
         },
         "safegraph.repositoryRag.enabled": {
           "type": "boolean",
@@ -237,7 +247,31 @@
             "manual"
           ],
           "default": "automatic",
-          "description": "When to trigger inline completion suggestions."
+          "description": "When to trigger inline completion suggestions. 'manual' only suggests when you run Safegraph AI: Trigger Inline Completion."
+        },
+        "safegraph.completion.modelId": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Bedrock model/inference-profile id for inline completion. Leave empty to reuse safegraph.modelId (Claude Haiku 4.5). Set a faster/cheaper model here to lower completion latency and cost."
+        },
+        "safegraph.completion.maxTokens": {
+          "type": "number",
+          "default": 256,
+          "minimum": 32,
+          "maximum": 2048,
+          "description": "Maximum tokens generated per inline completion request. Smaller values keep Claude Haiku 4.5 completions fast."
+        },
+        "safegraph.completion.debounceMs": {
+          "type": "number",
+          "default": 300,
+          "minimum": 0,
+          "maximum": 2000,
+          "description": "Delay before requesting an automatic inline completion, to avoid firing on every keystroke."
+        },
+        "safegraph.completion.multiline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow inline completions to span multiple lines (complete a statement or block). Disable for single-line suggestions only."
         },
         "safegraph.multifile.dependencyAnalysis": {
           "type": "boolean",
@@ -250,7 +284,7 @@
       "activitybar": [
         {
           "id": "safegraph",
-          "title": "Safegraph AI v0.16.0",
+          "title": "Safegraph AI v0.17.0",
           "icon": "media/icon.svg"
         }
       ]
@@ -299,6 +333,7 @@
     "@types/node": "^20.12.12",
     "@types/vscode": "^1.90.0",
     "@typescript-eslint/eslint-plugin": "^7.10.0",
+    "@vscode/vsce": "^2.26.0",
     "@typescript-eslint/parser": "^7.10.0",
     "jest": "^29.7.0",
     "eslint": "^8.57.0",

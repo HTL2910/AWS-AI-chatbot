@@ -1,12 +1,12 @@
 /**
  * Inline Completion Provider
- * VS Code completion provider for AI-powered inline suggestions
+ * VS Code provider for Claude Haiku 4.5 powered ghost-text suggestions.
  */
 
 import * as vscode from 'vscode';
 import { ContextAnalyzer } from './ContextAnalyzer';
 import { SuggestionEngine } from './SuggestionEngine';
-import { bedrockConverse, BedrockConverseOptions } from '../bedrock/bedrockClient';
+import { getCompletionConfig } from '../config/bedrock';
 
 export class InlineCompletionProvider implements vscode.InlineCompletionItemProvider {
   private contextAnalyzer: ContextAnalyzer;
@@ -14,10 +14,10 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
   private output: vscode.OutputChannel;
   private enabled: boolean;
 
-  constructor(output: vscode.OutputChannel) {
+  constructor(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
     this.output = output;
     this.contextAnalyzer = new ContextAnalyzer(output);
-    this.suggestionEngine = new SuggestionEngine(output);
+    this.suggestionEngine = new SuggestionEngine(context, output);
     this.enabled = true;
   }
 
@@ -31,33 +31,47 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
       return undefined;
     }
 
-    const config = vscode.workspace.getConfiguration('safegraph');
-    const completionEnabled = config.get('completion.enabled', true);
-    
-    if (!completionEnabled) {
+    const cfg = getCompletionConfig();
+    if (!cfg.enabled) {
       return undefined;
     }
 
+    // In manual mode only respond to an explicit invoke (e.g. the trigger command).
+    if (
+      cfg.triggerMode === 'manual' &&
+      context.triggerKind !== vscode.InlineCompletionTriggerKind.Invoke
+    ) {
+      return undefined;
+    }
+
+    // Debounce automatic requests so we don't fire on every keystroke.
+    if (
+      cfg.triggerMode === 'automatic' &&
+      context.triggerKind === vscode.InlineCompletionTriggerKind.Automatic
+    ) {
+      const settled = await this.debounce(cfg.debounceMs, token);
+      if (!settled || token.isCancellationRequested) {
+        return undefined;
+      }
+    }
+
     try {
-      // Analyze the current context
       const analysis = await this.contextAnalyzer.analyzeContext(document, position);
-      
-      // Generate suggestions based on context
-      const suggestions = await this.suggestionEngine.generateSuggestions(analysis);
-      
-      if (suggestions.length === 0) {
+      const suggestions = await this.suggestionEngine.generateSuggestions(analysis, token);
+      if (token.isCancellationRequested || suggestions.length === 0) {
         return undefined;
       }
 
-      // Convert to VS Code inline completion items
-      const items = suggestions.map((suggestion: any) => ({
-        insertText: suggestion.text,
-        range: new vscode.Range(position, position),
-        command: {
-          command: 'safegraph.acceptCompletion',
-          title: 'Accept'
-        }
-      }));
+      const items = suggestions
+        .filter((s) => s.text && s.text.length > 0)
+        .map(
+          (s) =>
+            new vscode.InlineCompletionItem(s.text, new vscode.Range(position, position))
+        );
+
+      if (items.length === 0) {
+        return undefined;
+      }
 
       return new vscode.InlineCompletionList(items);
     } catch (error) {
@@ -66,8 +80,28 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
     }
   }
 
+  private debounce(ms: number, token: vscode.CancellationToken): Promise<boolean> {
+    if (!ms || ms <= 0) {
+      return Promise.resolve(true);
+    }
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        disposable.dispose();
+        resolve(true);
+      }, ms);
+      const disposable = token.onCancellationRequested(() => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+    });
+  }
+
   public setEnabled(enabled: boolean): void {
     this.enabled = enabled;
     this.output.appendLine(`[InlineCompletionProvider] ${enabled ? 'Enabled' : 'Disabled'}`);
+  }
+
+  public isEnabled(): boolean {
+    return this.enabled;
   }
 }

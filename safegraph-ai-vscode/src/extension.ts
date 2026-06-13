@@ -3,6 +3,7 @@ import { ChatViewProvider } from "./chat/ChatViewProvider";
 import { runInlineEdit, acceptInlineEdit, rejectInlineEdit } from "./inline/inlineEdit";
 import { HistoryManager } from "./history/HistoryManager";
 import { HistoryViewer } from "./history/HistoryViewer";
+import { InlineCompletionProvider } from "./completion/InlineCompletionProvider";
 
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel("Safegraph AI");
@@ -128,6 +129,34 @@ export function activate(context: vscode.ExtensionContext) {
       }
     });
     context.subscriptions.push(inlineEditCommand);
+
+    // Register Claude Haiku 4.5 powered inline (ghost text) completion.
+    const completionProvider = new InlineCompletionProvider(context, output);
+    context.subscriptions.push(
+      vscode.languages.registerInlineCompletionItemProvider({ pattern: "**" }, completionProvider)
+    );
+
+    const toggleCompletionCommand = vscode.commands.registerCommand(
+      "safegraph.toggleCompletion",
+      async () => {
+        const next = !completionProvider.isEnabled();
+        completionProvider.setEnabled(next);
+        vscode.window.showInformationMessage(
+          `Safegraph AI: Inline completion ${next ? "enabled" : "disabled"}.`
+        );
+      }
+    );
+    context.subscriptions.push(toggleCompletionCommand);
+
+    const triggerCompletionCommand = vscode.commands.registerCommand(
+      "safegraph.triggerCompletion",
+      async () => {
+        await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
+      }
+    );
+    context.subscriptions.push(triggerCompletionCommand);
+
+    output.appendLine("[safegraph-ai] registered inline completion provider");
 
     output.appendLine(`[safegraph-ai] registered webview provider: ${ChatViewProvider.viewType}`);
     output.appendLine("[safegraph-ai] registered command: safegraph.openChat");

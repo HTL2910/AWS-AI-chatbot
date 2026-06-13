@@ -4,7 +4,9 @@
 
 SafeGraph AI turns VS Code into a local-first AI coding workspace for developers who want more than a chatbot. It is designed for multi-step engineering work: understand the repo, plan the task, edit files, run safe checks, fix failures, and summarize what actually changed.
 
-Current extension version: `0.16.0`
+Current extension version: `0.17.0`
+
+Model: tuned for **Claude Haiku 4.5** on Amazon Bedrock (fast, low-cost, near-frontier coding).
 
 ## Why SafeGraph AI
 
@@ -27,6 +29,7 @@ The goal is practical: **faster project understanding, fewer wasted tokens, bett
 | Task continuity | Tracks goal, plan steps, changed files, commands, verification, and open errors across turns | Strong |
 | Token optimization | Uses rolling memory, context cache, selective RAG, attachment truncation, and compact web/docs bundles | Strong |
 | Code editing | Generates unified diffs, validates them, applies them to the workspace, and supports keep/discard review | Strong |
+| Inline completion | Claude Haiku 4.5 ghost-text completion with fill-in-the-middle context, debounce, and cancellation | Strong |
 | Verification loop | Runs safe build/test/typecheck/lint commands and feeds output back into the agent | Strong |
 | Tool use | Local tools: `read_file`, `search_files`, `list_files`, `run_verification` | Strong |
 | Diff review UI | Live applied changes, per-file review sections, copy diff, expand/collapse, keep/discard controls | Improving |
@@ -61,6 +64,18 @@ SafeGraph AI keeps an active task state:
 - open errors
 
 This lets follow-up prompts like "fix tiếp", "run again", or "ok làm tiếp" continue the same task instead of starting over.
+
+### Inline AI Completion (Ghost Text)
+
+SafeGraph AI provides Cursor-style inline completion powered by Claude Haiku 4.5:
+
+- fill-in-the-middle suggestions using code before and after the cursor
+- single-line or multi-line completions (`safegraph.completion.multiline`)
+- automatic (debounced) or manual trigger modes
+- skips comments and strings, and cancels in-flight requests as you keep typing
+- reuses the same Bedrock key/model resolution as chat and inline edit
+
+Toggle it with `Safegraph AI: Toggle Inline Completion`, or request a suggestion on demand with `Safegraph AI: Trigger Inline Completion`.
 
 ### Repository-Aware Context
 
@@ -105,7 +120,7 @@ SafeGraph AI records commands and verification results. A completed task include
 Install the latest VSIX:
 
 ```bash
-code --install-extension safegraph-ai-vscode/safegraph-ai-0.16.0.vsix --force
+code --install-extension safegraph-ai-vscode/safegraph-ai-0.17.0.vsix --force
 ```
 
 Verify:
@@ -117,7 +132,7 @@ code --list-extensions --show-versions | grep safegraph
 Expected:
 
 ```text
-safegraph.safegraph-ai@0.16.0
+safegraph.safegraph-ai@0.17.0
 ```
 
 ## Configure Bedrock
@@ -151,6 +166,12 @@ Do not commit real `.env` files or real API keys.
 | `safegraph.vectorRag.enabled` | Future semantic vector RAG toggle |
 | `safegraph.vectorRag.provider` | Future provider such as `turbovec-sidecar` |
 | `safegraph.agent.maxFixLoops` | Max autonomous repair loops |
+| `safegraph.completion.enabled` | Enable Claude Haiku 4.5 inline (ghost text) completion |
+| `safegraph.completion.triggerMode` | `automatic` or `manual` inline completion |
+| `safegraph.completion.modelId` | Optional override model for completion (defaults to `safegraph.modelId`) |
+| `safegraph.completion.maxTokens` | Max tokens per inline completion request |
+| `safegraph.completion.debounceMs` | Debounce before automatic completion |
+| `safegraph.completion.multiline` | Allow multi-line inline completions |
 
 ## Repository Layout
 

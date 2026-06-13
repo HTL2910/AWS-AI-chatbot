@@ -48,6 +48,16 @@ describe('History System Integration', () => {
       assert.strictEqual(actionEntry?.actions?.[0].type, 'file_create');
     });
 
+    it('should log tool evidence within a task', () => {
+      manager.startTask('Tool Task', 'Test tool memory');
+      manager.logAction('Tool evidence: safegraph__read_file {"path":"src/app.ts"}', 'tool', 'summary');
+
+      const entries = manager.queryHistory({ limit: 100 });
+      const toolEntry = entries.find(e => e.type === 'ACTION' && e.actions?.[0].type === 'tool');
+      assert.ok(toolEntry, 'Tool evidence should be logged');
+      assert.strictEqual(toolEntry?.actions?.[0].content, 'summary');
+    });
+
     it('should log verification results', () => {
       manager.startTask('Test Task', 'Test Description');
       manager.logVerification(true, 'All tests passed');

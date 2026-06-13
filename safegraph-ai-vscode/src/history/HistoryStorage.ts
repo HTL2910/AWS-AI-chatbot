@@ -16,7 +16,7 @@ export interface TaskHistoryEntry {
   status: 'pending' | 'in_progress' | 'completed' | 'failed';
   plan?: string;
   actions?: Array<{
-    type: 'diff' | 'command' | 'file_create' | 'file_delete';
+    type: 'diff' | 'command' | 'file_create' | 'file_delete' | 'tool';
     description: string;
     content?: string;
     exitCode?: number;
