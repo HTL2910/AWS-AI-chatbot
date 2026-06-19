@@ -3,6 +3,70 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SafeGraph AI Chatbot</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="chat-header">
+            <h1>🤖 SafeGraph AI</h1>
+            <div class="header-right">
+                <span id="tokenCounter" class="token-counter" title="Total tokens used">0 tokens</span>
+                <button id="settingsBtn" class="clear-btn" title="Settings">⚙️</button>
+                <button id="clearBtn" class="clear-btn">Clear</button>
+            </div>
+        </div>
+
+        <!-- Settings Panel -->
+        <div id="settingsPanel" class="settings-panel" style="display:none;">
+            <div class="settings-content">
+                <h3>Settings</h3>
+                <div class="setting-row">
+                    <label>System Prompt:</label>
+                    <textarea id="systemPromptInput" rows="5" placeholder="Enter system prompt..."></textarea>
+                    <button id="saveSystemPrompt" class="small-btn">Save</button>
+                </div>
+                <div class="setting-row">
+                    <label>Max Output Tokens: <span id="maxTokensValue">8192</span></label>
+                    <input type="range" id="maxTokensSlider" min="256" max="16384" step="256" value="8192">
+                </div>
+                <div class="setting-row">
+                    <label>Temperature: <span id="tempValue">0.7</span></label>
+                    <input type="range" id="tempSlider" min="0" max="1" step="0.05" value="0.7">
+                </div>
+                <div class="setting-row">
+                    <label>
+                        <input type="checkbox" id="toolsToggle" checked>
+                        Enable Tool Use (read files, run code, etc.)
+                    </label>
+                </div>
+                <button id="closeSettings" class="small-btn">Close</button>
+            </div>
+        </div>
+
+        <div class="chat-box" id="chatBox">
+            <div class="message system">Welcome! I can read files, run code, search, and more. Ask me anything.</div>
+        </div>
+
+        <div class="input-area">
+            <input
+                type="text"
+                id="messageInput"
+                placeholder="Ask me anything... (I can read files, run code, search)"
+                autocomplete="off"
+            >
+            <button id="sendBtn" class="send-btn">Send</button>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AWS Bedrock Chatbot</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>

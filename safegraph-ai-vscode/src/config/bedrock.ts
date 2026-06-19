@@ -71,7 +71,35 @@ export function getCompletionConfig(): CompletionConfig {
 }
 
 /**
- * Resolve the Bedrock API key from SecretStorage, falling back to a workspace/.env
+ * Chat configuration type.
+ */
+export type ChatConfig = {
+  region: string;
+  modelId: string;
+  maxTokens: number;
+  temperature: number;
+  customSystemPrompt: string;
+};
+
+/** Resolve the chat/agent configuration from settings. */
+export function getChatConfig(): ChatConfig {
+  const cfg = vscode.workspace.getConfiguration("safegraph");
+  const base = getBedrockModelConfig();
+  return {
+    region: base.region,
+    modelId: base.modelId,
+    maxTokens: clampNumber(cfg.get<number>("chat.maxTokens", 8192), 8192, 256, 16384),
+    temperature: clampNumber(cfg.get<number>("chat.temperature", 0.2), 0.2, 0, 1),
+    customSystemPrompt: cfg.get<string>("chat.systemPrompt", "").trim()
+  };
+}
+
+function clampNumber(value: number, fallback: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+
+/** Resolve the Bedrock API key from SecretStorage, falling back to a workspace/.env
  * file. When found in .env, the value is cached in SecretStorage for later calls.
  * This is the single source of truth used by chat, inline edit, and completion.
  */

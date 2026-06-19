@@ -8,6 +8,7 @@ import { bedrockConverse, bedrockConverseStream } from "../bedrock/bedrockClient
 import { buildContext } from "../context/contextBuilder";
 import { maskSensitive } from "../security/mask";
 import { loadBedrockApiKeyFromDotEnv, loadBedrockApiKeyInfos, maskApiKey } from "../config/env";
+import { getChatConfig } from "../config/bedrock";
 import { applyUnifiedDiffToWorkspaceSmart, parseUnifiedDiff, preflightUnifiedDiffAgainstWorkspace } from "../apply/unifiedDiff";
 import { McpClientManager } from "../mcp/McpClient";
 import { CommandRunner, CommandRunResult, CommandUpdateMessage } from "../terminal/commandRunner";
@@ -111,8 +112,8 @@ type AgentTaskState = {
   agentNotes: { role: "context-scout" | "reviewer" | "test-fixer"; note: string; ts: number }[];
 };
 
-function buildSafegraphSystemPrompt(targetRoot: string) {
-  return `You are Safegraph AI, a pragmatic senior software engineer embedded in VS Code.
+function buildSafegraphSystemPrompt(targetRoot: string, customAppendix?: string) {
+  const base = `You are Safegraph AI, a pragmatic senior software engineer embedded in VS Code.
 
 Your first job is to understand the user's real intent from their latest message, active file, selected text, tagged files, diagnostics, git state, and recent conversation. The latest user request wins over older chat history.
 
@@ -173,6 +174,10 @@ Patch rules:
 - For deleted files use "--- a/<path>" and "+++ /dev/null".
 - Never output a bare diff without a short summary.
 - Keep changes tightly scoped to the user's request.`;
+  if (customAppendix) {
+    return base + `\n\nUSER-APPENDED SYSTEM INSTRUCTIONS\n${customAppendix}`;
+  }
+  return base;
 }
 
 function inferRequestType(text: string) {
@@ -636,7 +641,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }))
             .filter((a) => a.text.trim().length > 0);
 
-          const systemPrompt = buildSafegraphSystemPrompt(maskSensitive(targetRoot?.fsPath || ""));
+          const chatCfg = getChatConfig();
+          const systemPrompt = buildSafegraphSystemPrompt(maskSensitive(targetRoot?.fsPath || ""), chatCfg.customSystemPrompt || undefined);
           const taskPrompt = buildTaskPrompt({
             targetRoot: maskSensitive(targetRoot?.fsPath || ""),
             requestType,
@@ -750,6 +756,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             let streamedUiText = "";
 
             let isToolLoop = false;
+            const chatCfg = getChatConfig();
             for (;;) {
               const responseOptions = {
                 region,
@@ -757,8 +764,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 apiKey,
                 system: systemPrompt,
                 signal: this.currentAbort?.signal,
-                maxTokens: 8192,
-                temperature: 0.2,
+                maxTokens: chatCfg.maxTokens,
+                temperature: chatCfg.temperature,
                 toolConfig
               };
               const streamBaseAcc = totalAcc + (totalAcc ? "\n\n---\n\n" : "");
@@ -2402,6 +2409,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async converseComplete(prompt: string, options: { region: string; modelId: string; apiKey: string; maxTokens?: number; temperature?: number }) {
+    const chatCfg2 = getChatConfig();
     let combined = "";
     let loops = 0;
     let nextPrompt = prompt;
@@ -2411,8 +2419,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         modelId: options.modelId,
         apiKey: options.apiKey,
         signal: this.currentAbort?.signal,
-        maxTokens: options.maxTokens ?? 8192,
-        temperature: options.temperature ?? 0.15
+        maxTokens: options.maxTokens ?? chatCfg2.maxTokens,
+        temperature: options.temperature ?? chatCfg2.temperature
       });
       combined = (combined + (combined ? "\n" : "") + r.text).trim();
       loops += 1;
@@ -2465,12 +2473,13 @@ Invalid diff:
 ${diff}
 \`\`\``;
 
+    const chatCfg3 = getChatConfig();
     const repaired = await bedrockConverse(prompt, {
       region,
       modelId,
       apiKey,
-      maxTokens: 8192,
-      temperature: 0.1,
+      maxTokens: chatCfg3.maxTokens,
+      temperature: chatCfg3.temperature,
       signal: this.currentAbort?.signal
     });
 

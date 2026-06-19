@@ -1,12 +1,12 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.17.0",
+  "displayName": "Safegraph AI v0.18.0",
   "description": "Claude Haiku 4.5 powered AI coding IDE for VS Code: inline ghost-text completion, agentic chat, inline edits, and project-wide refactoring.",
   "repository": {
     "type": "git",
     "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
   },
-  "version": "0.17.0",
+  "version": "0.18.0",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
@@ -111,7 +111,7 @@
       }
     ],
     "configuration": {
-      "title": "Safegraph AI v0.17.0",
+      "title": "Safegraph AI v0.18.0",
       "properties": {
         "safegraph.autoRun": {
           "type": "string",
@@ -273,6 +273,25 @@
           "default": true,
           "description": "Allow inline completions to span multiple lines (complete a statement or block). Disable for single-line suggestions only."
         },
+        "safegraph.chat.maxTokens": {
+          "type": "number",
+          "default": 8192,
+          "minimum": 256,
+          "maximum": 16384,
+          "description": "Maximum output tokens per chat response. Higher values allow longer replies. Claude Sonnet supports up to 8192."
+        },
+        "safegraph.chat.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Chat response temperature. 0 = deterministic, 1 = creative. 0.2 is good for coding tasks."
+        },
+        "safegraph.chat.systemPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom system prompt appended to the built-in Safegraph AI prompt. Leave empty to use the default. Supports Vietnamese/English."
+        },
         "safegraph.multifile.dependencyAnalysis": {
           "type": "boolean",
           "default": true,
@@ -284,7 +303,7 @@
       "activitybar": [
         {
           "id": "safegraph",
-          "title": "Safegraph AI v0.17.0",
+          "title": "Safegraph AI v0.18.0",
           "icon": "media/icon.svg"
         }
       ]

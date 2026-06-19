@@ -2,9 +2,13 @@ import streamlit as st
 import requests
 import json
 import os
+import subprocess
+import sys
+import re
 from urllib.parse import quote
 from dotenv import load_dotenv
 from datetime import datetime
+from pathlib import Path
 
 # Load environment variables
 load_dotenv()
@@ -21,7 +25,28 @@ AVAILABLE_MODELS_AP_SOUTHEAST_1 = [
     "anthropic.claude-3-haiku-20240307-v1:0",
 ]
 
+# ── Configuration defaults ─────────────────────────────────────────
+DEFAULT_MAX_TOKENS = 8192
+DEFAULT_TEMPERATURE = 0.7
+MAX_CONTEXT_MESSAGES = 50
+SUMMARIZE_THRESHOLD = 40
+MAX_TOOL_LOOPS = 10
 
+SYSTEM_PROMPT_DEFAULT = """You are SafeGraph AI, an intelligent coding assistant powered by AWS Bedrock.
+
+You have access to tools that let you read files, list directories, run Python code, search for files, and write files.
+Use these tools when the user asks about code, files, or anything that requires inspecting their system.
+
+Guidelines:
+- Answer in the same language the user writes in (Vietnamese → Vietnamese, English → English).
+- When showing code, use fenced Markdown code blocks with the correct language tag.
+- Provide complete, runnable examples rather than pseudocode.
+- Use tools proactively when they would help answer the question more accurately.
+- If a tool fails, explain the error and suggest alternatives.
+- Be concise but thorough."""
+
+
+# ── Utility functions ──────────────────────────────────────────────
 def clean_api_key(value):
     if not value:
         return None
@@ -69,6 +94,334 @@ def clear_expired_connection(response):
         st.session_state.last_assistant_incomplete = False
         st.session_state.last_assistant_index = None
 
+
+# ── Tool definitions for Bedrock Converse API ──────────────────────
+TOOL_DEFINITIONS = [
+    {
+        "toolSpec": {
+            "name": "read_file",
+            "description": "Read the contents of a file. Returns the file content as text with line numbers.",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Absolute or relative path to the file to read."
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "description": "Optional 1-based start line number.",
+                            "default": 1
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "description": "Optional 1-based end line number (inclusive)."
+                        }
+                    },
+                    "required": ["path"]
+                }
+            }
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "list_directory",
+            "description": "List files and subdirectories in a directory. Returns names, types, and sizes.",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Absolute or relative path to the directory. Defaults to current directory.",
+                            "default": "."
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": "Optional glob pattern to filter results, e.g. '*.py' or '**/*.js'.",
+                            "default": "*"
+                        }
+                    },
+                    "required": []
+                }
+            }
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "run_python",
+            "description": "Execute a Python code snippet and return its stdout, stderr, and exit code. Runs in a subprocess with a 30-second timeout.",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": "Python code to execute."
+                        }
+                    },
+                    "required": ["code"]
+                }
+            }
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "search_files",
+            "description": "Search for a regex pattern across files in a directory. Returns matching lines with file paths and line numbers.",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Regex pattern to search for."
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Directory to search in. Defaults to current directory.",
+                            "default": "."
+                        },
+                        "file_glob": {
+                            "type": "string",
+                            "description": "Glob pattern to filter files, e.g. '*.py'. Defaults to all files.",
+                            "default": "*"
+                        }
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "write_file",
+            "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does.",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Absolute or relative path to the file to write."
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Content to write to the file."
+                        }
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        }
+    }
+]
+
+
+# ── Tool execution handlers ────────────────────────────────────────
+def tool_read_file(params: dict) -> str:
+    path = params.get("path", "")
+    start_line = params.get("start_line", 1)
+    end_line = params.get("end_line")
+    try:
+        p = Path(path)
+        if not p.exists():
+            return f"Error: File not found: {path}"
+        if not p.is_file():
+            return f"Error: Not a file: {path}"
+        if p.stat().st_size > 500_000:
+            return f"Error: File too large ({p.stat().st_size} bytes). Use start_line/end_line to read a portion."
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        total = len(lines)
+        start = max(1, start_line) - 1
+        end = end_line if end_line else total
+        selected = lines[start:end]
+        result_lines = []
+        for i, line in enumerate(selected, start=start + 1):
+            result_lines.append(f"{i:>6}→{line}")
+        header = f"File: {p} ({total} lines)\n"
+        return header + "\n".join(result_lines)
+    except Exception as e:
+        return f"Error reading file: {e}"
+
+
+def tool_list_directory(params: dict) -> str:
+    path = params.get("path", ".")
+    pattern = params.get("pattern", "*")
+    try:
+        p = Path(path)
+        if not p.exists():
+            return f"Error: Directory not found: {path}"
+        if not p.is_dir():
+            return f"Error: Not a directory: {path}"
+        matches = list(p.glob(pattern))
+        if not matches:
+            return f"No matches for pattern '{pattern}' in {path}"
+        lines = []
+        for m in sorted(matches)[:200]:
+            kind = "DIR " if m.is_dir() else "FILE"
+            size = m.stat().st_size if m.is_file() else "-"
+            lines.append(f"{kind}  {size:>10}  {m.name}")
+        return f"Directory: {p.resolve()} ({len(matches)} items)\n" + "\n".join(lines)
+    except Exception as e:
+        return f"Error listing directory: {e}"
+
+
+def tool_run_python(params: dict) -> str:
+    code = params.get("code", "")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=30,
+            cwd=os.getcwd()
+        )
+        output = ""
+        if result.stdout:
+            output += f"STDOUT:\n{result.stdout}"
+        if result.stderr:
+            output += f"\nSTDERR:\n{result.stderr}"
+        output += f"\nExit code: {result.returncode}"
+        return output.strip() or "(no output)"
+    except subprocess.TimeoutExpired:
+        return "Error: Code execution timed out (30s limit)"
+    except Exception as e:
+        return f"Error running code: {e}"
+
+
+def tool_search_files(params: dict) -> str:
+    pattern = params.get("pattern", "")
+    path = params.get("path", ".")
+    file_glob = params.get("file_glob", "*")
+    try:
+        p = Path(path)
+        if not p.exists():
+            return f"Error: Path not found: {path}"
+        regex = re.compile(pattern, re.IGNORECASE)
+        matches = []
+        files_checked = 0
+        for f in p.rglob(file_glob):
+            if not f.is_file():
+                continue
+            if f.stat().st_size > 500_000:
+                continue
+            try:
+                for i, line in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                    if regex.search(line):
+                        matches.append(f"{f}:{i}: {line.strip()[:200]}")
+            except Exception:
+                continue
+            files_checked += 1
+            if files_checked > 500:
+                break
+            if len(matches) > 100:
+                matches.append("... (truncated, too many matches)")
+                break
+        if not matches:
+            return f"No matches for '{pattern}' in {path}"
+        return f"Found {len(matches)} match(es) across {files_checked} file(s):\n" + "\n".join(matches)
+    except re.error as e:
+        return f"Invalid regex pattern: {e}"
+    except Exception as e:
+        return f"Error searching: {e}"
+
+
+def tool_write_file(params: dict) -> str:
+    path = params.get("path", "")
+    content = params.get("content", "")
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        return f"Successfully wrote {len(content)} chars to {p}"
+    except Exception as e:
+        return f"Error writing file: {e}"
+
+
+TOOL_HANDLERS = {
+    "read_file": tool_read_file,
+    "list_directory": tool_list_directory,
+    "run_python": tool_run_python,
+    "search_files": tool_search_files,
+    "write_file": tool_write_file,
+}
+
+
+def execute_tool(tool_name: str, tool_input: dict) -> str:
+    """Execute a tool and return its result string."""
+    handler = TOOL_HANDLERS.get(tool_name)
+    if not handler:
+        return f"Error: Unknown tool '{tool_name}'"
+    return handler(tool_input)
+
+
+# ── Smart context management ───────────────────────────────────────
+def estimate_message_tokens(messages: list) -> int:
+    """Rough estimate of token count (1 token ~ 3 chars)."""
+    total_chars = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    total_chars += len(str(block.get("text", "")))
+                    total_chars += len(str(block.get("toolUse", {})))
+                    total_chars += len(str(block.get("toolResult", {})))
+                else:
+                    total_chars += len(str(block))
+        else:
+            total_chars += len(str(content))
+    return max(1, total_chars // 3)
+
+
+def summarize_conversation(api_key: str, model_id: str, region: str, messages: list) -> str:
+    """Use the model itself to summarize older messages, reducing context size."""
+    old_messages = messages[:SUMMARIZE_THRESHOLD]
+    summary_prompt = "Summarize the following conversation in 3-5 bullet points, preserving key facts, decisions, and code references. Write in the same language as the conversation:\n\n"
+    for msg in old_messages:
+        role = msg.get("role", "?")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            texts = []
+            for block in content:
+                if isinstance(block, dict) and "text" in block:
+                    texts.append(block["text"])
+                elif isinstance(block, str):
+                    texts.append(block)
+            content = " ".join(texts)
+        summary_prompt += f"{role}: {str(content)[:500]}\n"
+
+    url = bedrock_converse_url(region, model_id)
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "messages": [{"role": "user", "content": [{"text": summary_prompt}]}],
+        "inferenceConfig": {"maxTokens": 512, "temperature": 0.3},
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
+    except Exception:
+        pass
+    return "(Summary unavailable)"
+
+
+def build_api_messages(session_messages: list) -> list:
+    """Build the messages list for the Bedrock Converse API."""
+    api_messages = []
+    for msg in session_messages:
+        role = msg["role"]
+        content = msg["content"]
+        if isinstance(content, list):
+            # Already in API format (tool use / tool result messages)
+            api_messages.append({"role": role, "content": content})
+        else:
+            api_messages.append({"role": role, "content": [{"text": str(content)}]})
+    return api_messages
+
+
+# ── CSS styles ─────────────────────────────────────────────────────
 # Page configuration
 st.set_page_config(
     page_title="AWS Bedrock Chatbot",
@@ -77,7 +430,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for ChatGPT-like interface
 st.markdown("""
     <style>
     .chat-message {
@@ -118,10 +470,24 @@ st.markdown("""
         padding: 0.75rem 1rem;
         border-radius: 1rem;
     }
+    .tool-call-box {
+        background: #fff3cd;
+        padding: 8px;
+        border-radius: 6px;
+        margin: 4px 0;
+        font-size: 0.9em;
+    }
+    .tool-result-box {
+        background: #d4edda;
+        padding: 8px;
+        border-radius: 6px;
+        margin: 4px 0;
+        font-size: 0.85em;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state
+# ── Initialize session state ───────────────────────────────────────
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "api_key" not in st.session_state:
@@ -132,17 +498,22 @@ if "last_assistant_incomplete" not in st.session_state:
     st.session_state.last_assistant_incomplete = False
 if "last_assistant_index" not in st.session_state:
     st.session_state.last_assistant_index = None
+if "total_tokens_used" not in st.session_state:
+    st.session_state.total_tokens_used = 0
+if "tool_calls_count" not in st.session_state:
+    st.session_state.tool_calls_count = 0
+if "conversation_summary" not in st.session_state:
+    st.session_state.conversation_summary = None
 
-# Sidebar configuration
+# ── Sidebar configuration ──────────────────────────────────────────
 with st.sidebar:
     st.title("⚙️ Cấu hình")
-    
+
     # API Key input
     st.subheader("AWS Bedrock Credentials")
-    
-    # Check if API_KEY exists in .env
+
     env_api_key = get_env_api_key()
-    
+
     if env_api_key:
         st.success("✅ Đã tìm thấy API key trong .env (AWS_BEARER_TOKEN_BEDROCK hoặc API_KEY)")
         api_key = env_api_key
@@ -153,22 +524,12 @@ with st.sidebar:
             type="password",
             help="Lấy từ AWS Console (bedrock-api-key-...)"
         )
-    
+
     # Model selection
     model_id = st.selectbox(
         "Chọn Model:",
         AVAILABLE_MODELS_AP_SOUTHEAST_1,
         help="Chọn model Claude phù hợp",
-    )
-
-    use_inference_profile = st.checkbox(
-        "Dùng Inference Profile ARN (bắt buộc nếu model không hỗ trợ on-demand)",
-        value=False,
-    )
-    inference_profile_arn = st.text_input(
-        "Inference Profile ARN (arn:aws:bedrock:...:application-inference-profile/...)",
-        type="password",
-        disabled=not use_inference_profile,
     )
 
     effective_model_id = model_id
@@ -179,12 +540,44 @@ with st.sidebar:
         ["ap-southeast-1"],
         help="Chọn region gần nhất với bạn",
     )
-
-    # Force single region behavior even if UI changes later.
     region = "ap-southeast-1"
 
-    st.info(f"Model: {effective_model_id}\nRegion: {region}")
-    
+    # ── Token & Temperature settings ────────────────────────────
+    st.divider()
+    st.subheader("🎛️ Model Settings")
+
+    max_output_tokens = st.slider(
+        "Max Output Tokens",
+        min_value=256, max_value=16384,
+        value=DEFAULT_MAX_TOKENS, step=256,
+        help="Số token tối đa cho mỗi response. Claude Sonnet hỗ trợ đến 8192, Haiku hỗ trợ 4096."
+    )
+    temperature = st.slider(
+        "Temperature",
+        min_value=0.0, max_value=1.0,
+        value=DEFAULT_TEMPERATURE, step=0.05,
+        help="0 = chắc chắc, 1 = sáng tạo. 0.7 là cân bằng tốt."
+    )
+
+    # ── Tool use toggle ────────────────────────────────────────
+    enable_tools = st.toggle(
+        "🔧 Bật Tool Use",
+        value=True,
+        help="Cho phép AI đọc file, liệt kê thư mục, chạy code, tìm kiếm. Bật để AI có thể hành động như một agent."
+    )
+
+    # ── System prompt ──────────────────────────────────────────
+    st.divider()
+    st.subheader("📝 System Prompt")
+    system_prompt = st.text_area(
+        "Hướng dẫn cho AI:",
+        value=SYSTEM_PROMPT_DEFAULT,
+        height=150,
+        help="Định hướng cách AI trả lời. Thay đổi để tùy chỉnh phong cách."
+    )
+
+    st.info(f"Model: {effective_model_id}\nRegion: {region}\nMax tokens: {max_output_tokens}\nTools: {'ON' if enable_tools else 'OFF'}")
+
     # Configure button
     if st.button("🔧 Cấu hình Kết nối", use_container_width=True):
         try:
@@ -197,13 +590,13 @@ with st.sidebar:
                 st.session_state.region = region
                 st.success("✅ Kết nối thành công!")
             else:
-                st.error(f"âŒ {api_key_error}")
+                st.error(f"❌ {api_key_error}")
                 st.error("❌ Vui lòng nhập API_KEY")
                 st.session_state.api_key_configured = False
         except Exception as e:
             st.error(f"❌ Lỗi kết nối: {str(e)}")
             st.session_state.api_key_configured = False
-    
+
     # Chat history management
     st.divider()
     st.subheader("Test Nhanh Models")
@@ -217,12 +610,10 @@ with st.sidebar:
             import time
 
             models_to_test = AVAILABLE_MODELS_AP_SOUTHEAST_1
-
             results = []
             headers = {"Authorization": f"Bearer {api_key_clean}", "Content-Type": "application/json"}
             payload = {
                 "messages": [{"role": "user", "content": [{"text": "ping"}]}],
-                # Some models reject specifying both temperature and top_p/topP.
                 "inferenceConfig": {"maxTokens": 16, "temperature": 0.0},
             }
 
@@ -239,15 +630,10 @@ with st.sidebar:
                             err = (r.text or "").strip().replace("\n", " ")[:200]
                             if is_expired_bedrock_token(r):
                                 err = format_bedrock_error(r)
-                            # Stop early if daily token quota is exhausted.
-                            if (
-                                r.status_code == 429
-                                and "Too many tokens per day" in err
-                            ):
+                            if r.status_code == 429 and "Too many tokens per day" in err:
                                 results.append({"model": m, "status": r.status_code, "ms": ms, "ok": ok, "error": err})
                                 break
-                            # Surface the common "needs inference profile" hint more clearly.
-                            if r.status_code == 400 and "on-demand throughput isnâ€™t supported" in err:
+                            if r.status_code == 400 and "on-demand throughput" in err:
                                 err = err + " | Hint: cần Inference Profile ARN cho model này."
                         results.append({"model": m, "status": r.status_code, "ms": ms, "ok": ok, "error": err})
                     except Exception as ex:
@@ -259,13 +645,16 @@ with st.sidebar:
 
     st.divider()
     st.subheader("📝 Lịch sử Chat")
-    
+
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🗑️ Xóa Lịch sử", use_container_width=True):
             st.session_state.messages = []
+            st.session_state.conversation_summary = None
+            st.session_state.total_tokens_used = 0
+            st.session_state.tool_calls_count = 0
             st.rerun()
-    
+
     with col2:
         if st.button("💾 Lưu Chat", use_container_width=True):
             if st.session_state.messages:
@@ -276,8 +665,8 @@ with st.sidebar:
                 st.success(f"✅ Đã lưu: {filename}")
             else:
                 st.info("ℹ️ Không có tin nhắn để lưu")
-    
-    # Display connection status
+
+    # Display connection status + stats
     st.divider()
     if st.session_state.api_key_configured:
         st.success("🟢 Đã kết nối")
@@ -286,29 +675,85 @@ with st.sidebar:
     else:
         st.warning("🔴 Chưa kết nối")
 
-# Main chat interface
+    # Token usage stats
+    st.divider()
+    st.subheader("📊 Token Usage")
+    st.metric("Tổng tokens đã dùng", f"{st.session_state.total_tokens_used:,}")
+    st.metric("Tool calls", f"{st.session_state.tool_calls_count}")
+    msg_count = len(st.session_state.messages)
+    est_tokens = estimate_message_tokens(st.session_state.messages) if st.session_state.messages else 0
+    st.metric("Tin nhắn", f"{msg_count} (~{est_tokens:,} tokens context)")
+    if st.session_state.conversation_summary:
+        st.info("📋 Đã tóm tắt hội thoại cũ")
+
+
+# ── Helper: render a message in the chat ──────────────────────────
+def render_message(role: str, content):
+    """Render a chat message. Content can be a string or a list of content blocks."""
+    if isinstance(content, list):
+        # Complex content (tool use / tool result)
+        parts_html = []
+        for block in content:
+            if isinstance(block, str):
+                parts_html.append(block)
+            elif isinstance(block, dict):
+                if "text" in block:
+                    parts_html.append(block["text"])
+                elif "toolUse" in block:
+                    tu = block["toolUse"]
+                    name = tu.get("name", "unknown")
+                    inp = tu.get("input", {})
+                    inp_str = json.dumps(inp, ensure_ascii=False, indent=2)
+                    if len(inp_str) > 500:
+                        inp_str = inp_str[:500] + "..."
+                    parts_html.append(
+                        f'<div class="tool-call-box">'
+                        f'🔧 <b>Tool Call:</b> {name}<br/><pre style="margin:4px 0;font-size:0.85em;">{inp_str}</pre></div>'
+                    )
+                elif "toolResult" in block:
+                    tr = block["toolResult"]
+                    content_items = tr.get("content", [])
+                    result_text = ""
+                    for ci in content_items:
+                        if isinstance(ci, dict) and "text" in ci:
+                            result_text += ci["text"]
+                    status = tr.get("status", "")
+                    icon = "✅" if status == "success" else "⚠️"
+                    display_text = result_text[:1500] + ("..." if len(result_text) > 1500 else "")
+                    display_escaped = display_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    parts_html.append(
+                        f'<div class="tool-result-box">'
+                        f'{icon} <b>Tool Result</b> ({status}):<br/><pre style="margin:4px 0;white-space:pre-wrap;font-size:0.8em;">{display_escaped}</pre></div>'
+                    )
+        text = "\n".join(parts_html)
+    else:
+        text = str(content)
+
+    if role == "user":
+        css_class = "user"
+    else:
+        css_class = "assistant"
+
+    st.markdown(f"""
+        <div class="chat-message {css_class}">
+            <div class="message-content">
+                {text}
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+
+# ── Main chat interface ────────────────────────────────────────────
 st.title("🤖 AWS Bedrock Chatbot")
 
 # Display chat messages
 chat_container = st.container()
 with chat_container:
     for message in st.session_state.messages:
-        if message["role"] == "user":
-            st.markdown(f"""
-                <div class="chat-message user">
-                    <div class="message-content">
-                        {message["content"]}
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-                <div class="chat-message assistant">
-                    <div class="message-content">
-                        {message["content"]}
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
+        render_message(
+            message.get("role", "assistant"),
+            message.get("content", ""),
+        )
 
 # Input area
 st.divider()
@@ -324,25 +769,19 @@ if not st.session_state.api_key_configured:
 else:
     user_input = st.text_input(
         "Nhập tin nhắn:",
-        placeholder="Hỏi tôi bất cứ điều gì...",
+        placeholder="Hỏi tôi bất cứ điều gì... (AI có thể đọc file, chạy code, tìm kiếm)",
         key="user_input"
     )
 
-    # Cursor-like "Continue" if previous assistant response was cut by maxTokens.
+    # Continue button if previous response was truncated
     if st.session_state.last_assistant_incomplete and st.session_state.last_assistant_index is not None:
         if st.button("Continue", use_container_width=True):
             try:
                 with st.spinner("⏳ Đang tiếp tục..."):
-                    messages_for_api = []
-                    for msg in st.session_state.messages:
-                        messages_for_api.append(
-                            {
-                                "role": msg["role"],
-                                "content": [{"text": msg["content"]}],
-                            }
-                        )
-                    # Do not add a visible user message to history; just nudge the model to continue.
-                    messages_for_api.append({"role": "user", "content": [{"text": "Continue."}]})
+                    api_messages = build_api_messages(st.session_state.messages)
+                    api_messages.append({"role": "user", "content": [{"text": "Continue."}]})
+
+                    system_blocks = [{"text": system_prompt}]
 
                     url = bedrock_converse_url(st.session_state.region, st.session_state.model_id)
                     headers = {
@@ -350,13 +789,17 @@ else:
                         "Content-Type": "application/json",
                     }
                     payload = {
-                        "messages": messages_for_api,
+                        "system": system_blocks,
+                        "messages": api_messages,
                         "inferenceConfig": {
-                            "maxTokens": 1024,
-                            "temperature": 0.7,
+                            "maxTokens": max_output_tokens,
+                            "temperature": temperature,
                         },
                     }
-                    response = requests.post(url, headers=headers, json=payload)
+                    if enable_tools:
+                        payload["toolConfig"] = {"tools": TOOL_DEFINITIONS}
+
+                    response = requests.post(url, headers=headers, json=payload, timeout=120)
 
                     if response.status_code != 200:
                         clear_expired_connection(response)
@@ -367,12 +810,13 @@ else:
 
                     result = response.json()
                     stop_reason = (result.get("stopReason") or result.get("stop_reason") or "").lower()
-                    next_text = (
-                        result.get("output", {})
-                        .get("message", {})
-                        .get("content", [{}])[0]
-                        .get("text", "")
-                    )
+                    usage = result.get("usage", {})
+                    st.session_state.total_tokens_used += usage.get("totalTokens", 0)
+
+                    next_text = ""
+                    for block in result.get("output", {}).get("message", {}).get("content", []):
+                        if "text" in block:
+                            next_text += block["text"]
                     if not next_text:
                         next_text = str(result)
 
@@ -390,14 +834,14 @@ else:
                 st.error(f"❌ Lỗi kết nối: {str(e)}")
                 st.session_state.last_assistant_incomplete = False
                 st.session_state.last_assistant_index = None
-    
+
     if user_input:
         # Add user message to history
         st.session_state.messages.append({
             "role": "user",
             "content": user_input
         })
-        
+
         # Display user message
         st.markdown(f"""
             <div class="chat-message user">
@@ -406,87 +850,164 @@ else:
                 </div>
             </div>
         """, unsafe_allow_html=True)
-        
-        # Get response from Bedrock
+
+        # ── Agent loop: call Bedrock with tools ────────────────────
         try:
             with st.spinner("⏳ Đang suy nghĩ..."):
-                # Prepare messages for Bedrock Converse API format
-                messages_for_api = []
-                for msg in st.session_state.messages:
-                    messages_for_api.append(
-                        {
-                            "role": msg["role"],
-                            "content": [{"text": msg["content"]}],
-                        }
+                # Smart context: summarize if conversation is too long
+                if len(st.session_state.messages) > MAX_CONTEXT_MESSAGES and st.session_state.api_key:
+                    summary = summarize_conversation(
+                        st.session_state.api_key,
+                        st.session_state.model_id,
+                        st.session_state.region,
+                        st.session_state.messages,
                     )
-                
-                # Call Bedrock API
+                    if summary:
+                        st.session_state.conversation_summary = summary
+                        # Keep only recent messages
+                        kept = st.session_state.messages[-SUMMARIZE_THRESHOLD:]
+                        st.session_state.messages = kept
+
+                # Build API messages
+                api_messages = build_api_messages(st.session_state.messages)
+
+                # Build system blocks
+                system_blocks = [{"text": system_prompt}]
+                if st.session_state.conversation_summary:
+                    system_blocks.insert(0, {"text": f"Previous conversation summary:\n{st.session_state.conversation_summary}"})
+
                 url = bedrock_converse_url(st.session_state.region, st.session_state.model_id)
-                
-                # Headers cực kỳ quan trọng
                 headers = {
                     "Authorization": f"Bearer {st.session_state.api_key}",
                     "Content-Type": "application/json"
                 }
-                
-                # Payload format Anthropic
-                payload = {
-                    "messages": messages_for_api,
-                    "inferenceConfig": {
-                        "maxTokens": 1024,
-                        "temperature": 0.7,
-                    },
-                }
-                
-                response = requests.post(url, headers=headers, json=payload)
-                
-                if response.status_code == 200:
+
+                # Agent loop: keep calling until model finishes (no more tool_use)
+                for loop_count in range(MAX_TOOL_LOOPS + 1):
+                    payload = {
+                        "system": system_blocks,
+                        "messages": api_messages,
+                        "inferenceConfig": {
+                            "maxTokens": max_output_tokens,
+                            "temperature": temperature,
+                        },
+                    }
+                    if enable_tools:
+                        payload["toolConfig"] = {"tools": TOOL_DEFINITIONS}
+
+                    response = requests.post(url, headers=headers, json=payload, timeout=120)
+
+                    if response.status_code != 200:
+                        clear_expired_connection(response)
+                        st.error(f"❌ {format_bedrock_error(response)}")
+                        st.session_state.messages.pop()  # Remove user message
+                        break
+
                     result = response.json()
                     stop_reason = (result.get("stopReason") or result.get("stop_reason") or "").lower()
-                    
-                    # Converse response shape: output.message.content[].text
-                    assistant_message = ""
-                    try:
-                        assistant_message = (
-                            result.get("output", {})
-                            .get("message", {})
-                            .get("content", [{}])[0]
-                            .get("text", "")
+
+                    # Track token usage
+                    usage = result.get("usage", {})
+                    st.session_state.total_tokens_used += usage.get("totalTokens", 0)
+
+                    # Extract content blocks from the response
+                    response_content = result.get("output", {}).get("message", {}).get("content", [])
+
+                    # Check if model wants to use tools
+                    tool_use_blocks = [b for b in response_content if "toolUse" in b]
+                    text_blocks = [b for b in response_content if "text" in b]
+
+                    if tool_use_blocks and enable_tools:
+                        # Add assistant's response (with tool use) to API messages
+                        api_messages.append({"role": "assistant", "content": response_content})
+
+                        # Add to session messages for display
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": response_content
+                        })
+                        st.session_state.tool_calls_count += len(tool_use_blocks)
+
+                        # Execute each tool and build tool_result messages
+                        tool_result_content = []
+                        for tu_block in tool_use_blocks:
+                            tool_info = tu_block["toolUse"]
+                            tool_name = tool_info.get("name", "")
+                            tool_input = tool_info.get("input", {})
+                            tool_use_id = tool_info.get("toolUseId", "")
+
+                            # Execute the tool
+                            result_text = execute_tool(tool_name, tool_input)
+
+                            # Add tool result to API messages
+                            tool_result_content.append({
+                                "toolResult": {
+                                    "toolUseId": tool_use_id,
+                                    "status": "success",
+                                    "content": [{"text": result_text}]
+                                }
+                            })
+
+                            # Show tool result in chat
+                            st.session_state.messages.append({
+                                "role": "user",
+                                "content": [{
+                                    "toolResult": {
+                                        "toolUseId": tool_use_id,
+                                        "status": "success",
+                                        "content": [{"text": result_text[:2000]}]
+                                    }
+                                }]
+                            })
+
+                        # Add tool results as a "user" message (per Converse API spec)
+                        api_messages.append({"role": "user", "content": tool_result_content})
+
+                        # Continue the loop - model will see tool results and respond
+                        continue
+                    else:
+                        # No tool use - this is the final response
+                        assistant_text = ""
+                        for b in text_blocks:
+                            assistant_text += b.get("text", "")
+                        if not assistant_text and response_content:
+                            assistant_text = str(response_content)
+
+                        # If there were tool_use blocks but tools disabled, note it
+                        if tool_use_blocks and not enable_tools:
+                            assistant_text += "\n\n_(AI đã yêu cầu dùng tool nhưng tool use đang tắt. Bật toggle 🔧 Bật Tool Use ở sidebar.)_"
+
+                        if not assistant_text:
+                            assistant_text = "(Không có phản hồi)"
+
+                        # Add assistant message to history
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": assistant_text
+                        })
+
+                        # Track truncation
+                        st.session_state.last_assistant_incomplete = stop_reason in ("max_tokens", "max-tokens")
+                        st.session_state.last_assistant_index = (
+                            len(st.session_state.messages) - 1 if st.session_state.last_assistant_incomplete else None
                         )
-                    except Exception:
-                        assistant_message = ""
 
-                    if not assistant_message:
-                        assistant_message = str(result)
-                    
-                    # Add assistant message to history
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": assistant_message
-                    })
-
-                    # Track truncation for Continue
-                    st.session_state.last_assistant_incomplete = stop_reason in ("max_tokens", "max-tokens")
-                    st.session_state.last_assistant_index = (
-                        len(st.session_state.messages) - 1 if st.session_state.last_assistant_incomplete else None
-                    )
-                    
-                    # Display assistant message
-                    st.markdown(f"""
-                        <div class="chat-message assistant">
-                            <div class="message-content">
-                                {assistant_message}
+                        # Display assistant message
+                        st.markdown(f"""
+                            <div class="chat-message assistant">
+                                <div class="message-content">
+                                    {assistant_text}
+                                </div>
                             </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                    st.rerun()
+                        """, unsafe_allow_html=True)
+
+                        st.rerun()
+                        break
+
                 else:
-                    clear_expired_connection(response)
-                    error_message = f"❌ {format_bedrock_error(response)}"
-                    st.error(error_message)
-                    st.session_state.messages.pop()  # Remove user message
-                
+                    # Hit max tool loops
+                    st.warning(f"⚠️ Đã đạt giới hạn {MAX_TOOL_LOOPS} vòng tool calls. Dừng lại.")
+
         except Exception as e:
             error_message = f"❌ Lỗi kết nối: {str(e)}"
             st.session_state.messages.append({
