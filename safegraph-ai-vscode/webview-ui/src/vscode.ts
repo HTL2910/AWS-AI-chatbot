@@ -1,7 +1,7 @@
 export interface VSCodeWrapper {
-  postMessage(message: any): void;
-  getState(): any;
-  setState(state: any): void;
+  postMessage(message: unknown): void;
+  getState(): unknown;
+  setState(state: unknown): void;
 }
 
 declare const acquireVsCodeApi: () => VSCodeWrapper;
@@ -15,9 +15,9 @@ export function getVSCodeAPI(): VSCodeWrapper {
     } catch {
       // Fallback for browser testing
       api = {
-        postMessage: (message: any) => console.log("postMessage", message),
+        postMessage: (message: unknown) => console.log("postMessage", message),
         getState: () => ({}),
-        setState: (state: any) => console.log("setState", state),
+        setState: (state: unknown) => console.log("setState", state),
       };
     }
   }

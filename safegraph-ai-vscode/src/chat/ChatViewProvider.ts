@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
 import * as https from "https";
+import ts from "typescript";
 import { getChatWebviewHtml } from "./webviewHtml";
 import { bedrockConverse, bedrockConverseStream } from "../bedrock/bedrockClient";
 import { buildContext } from "../context/contextBuilder";
@@ -334,8 +335,9 @@ ${args.taskState ? `\nCURRENT TASK STATE\n${args.taskState}\n` : ""}
 LOCAL TOOLING CONTRACT
 - Prefer Safegraph local tools for incremental inspection: safegraph__read_file, safegraph__search_files, safegraph__list_files.
 - Use safegraph__run_safe_command only for safe read-only inspection commands such as pwd, ls, rg, git status, or npm pkg get scripts.
-- Use safegraph__run_verification only for build/test/typecheck/lint verification commands after a change or when diagnosing a failure.
+- Use safegraph__run_verification for build/test/typecheck/lint/check commands after a change or when diagnosing a React/TypeScript project failure.
 - Use safegraph__apply_unified_diff when the task requires editing files. Provide one focused unified diff with paths relative to the target root.
+- For React/JSX changes, keep parentheses/braces balanced and run verification after edits. If a Safegraph file tool reports "Syntax check failed", repair that file before doing anything else.
 - Use tools to read/search targeted files instead of asking for pasted content or relying on stale broad context.
 - Stop inspecting once you have enough evidence to answer. Do not call list/read/search repeatedly just to improve confidence.
 - After three to four tool batches, synthesize a useful answer from the evidence already collected and clearly state any remaining uncertainty.
@@ -1230,12 +1232,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       {
         toolSpec: {
           name: "safegraph__run_verification",
-          description: "Run a safe build/test/typecheck/lint command and return compact output. Unsafe commands are refused.",
+          description: "Run a safe build/test/typecheck/lint/check command and return compact output. Supports common React/Vite/Next verification scripts such as npm run lint, npm run build, npm test, npm run typecheck, npm run check, vite build, next build, tsc, eslint, jest, vitest, and prettier --check. Unsafe commands are refused.",
           inputSchema: {
             json: {
               type: "object",
               properties: {
-                command: { type: "string", description: "Verification command such as npm run build, npm test, pytest, or tsc" }
+                command: { type: "string", description: "Verification command such as npm run lint, npm run build, npm test, npm run typecheck, npm run check, vite build, next build, pytest, or tsc" }
               },
               required: ["command"]
             }
@@ -1257,6 +1259,50 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
           }
         }
+      },
+      {
+        toolSpec: {
+          name: "safegraph__write_file",
+          description: "Create a new file or completely overwrite an existing file with the given content. Use this for creating new files. For editing existing files, prefer safegraph__edit_file for small changes or safegraph__apply_unified_diff for complex multi-file changes.",
+          inputSchema: {
+            json: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "Workspace-relative file path" },
+                content: { type: "string", description: "Complete file content to write" },
+                createDirectories: { type: "boolean", description: "Create parent directories if they don't exist, default true" }
+              },
+              required: ["path", "content"]
+            }
+          }
+        }
+      },
+      {
+        toolSpec: {
+          name: "safegraph__edit_file",
+          description: "Edit an existing file by replacing exact text matches. Use this for targeted edits when you know the exact text to replace. For creating new files use safegraph__write_file. For complex multi-file changes use safegraph__apply_unified_diff.",
+          inputSchema: {
+            json: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "Workspace-relative file path" },
+                edits: {
+                  type: "array",
+                  description: "Array of edit operations",
+                  items: {
+                    type: "object",
+                    properties: {
+                      find: { type: "string", description: "Exact text to find (must match exactly including whitespace)" },
+                      replace: { type: "string", description: "Text to replace with" }
+                    },
+                    required: ["find", "replace"]
+                  }
+                }
+              },
+              required: ["path", "edits"]
+            }
+          }
+        }
       }
     ];
   }
@@ -1275,6 +1321,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return await this.localRunVerification(input, cwd, webview);
       case "apply_unified_diff":
         return await this.localApplyUnifiedDiff(input, targetRoot, webview);
+      case "write_file":
+        return await this.localWriteFile(input, targetRoot);
+      case "edit_file":
+        return await this.localEditFile(input, targetRoot);
       default:
         throw new Error(`Unknown Safegraph local tool: ${toolName}`);
     }
@@ -1305,11 +1355,67 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async localReadFile(input: any, targetRoot?: vscode.Uri) {
     const { uri, rel } = this.resolveWorkspaceToolPath(String(input?.path || ""), targetRoot);
     const maxChars = clampNumber(input?.maxChars, 12000, 1000, 30000);
+    const stat = await vscode.workspace.fs.stat(uri);
+    if (stat.type === vscode.FileType.Directory) {
+      const entries = await vscode.workspace.fs.readDirectory(uri);
+      const listing = entries.map(([name, type]) => {
+        const suffix = type === vscode.FileType.Directory ? "/" : "";
+        return `  ${name}${suffix}`;
+      }).join("\n");
+      return `${rel} is a directory (${entries.length} entries). Use safegraph__list_files or safegraph__read_file on specific files inside:\n${listing}`;
+    }
     const bytes = await vscode.workspace.fs.readFile(uri);
     const text = Buffer.from(bytes).toString("utf8");
     if (text.includes("\u0000")) throw new Error(`${rel} appears to be binary.`);
     if (text.length <= maxChars) return `--- ${rel} ---\n${text}`;
     return `--- ${rel} (truncated) ---\n${text.slice(0, Math.floor(maxChars * 0.65))}\n\n[...middle truncated...]\n\n${text.slice(-Math.floor(maxChars * 0.25))}`;
+  }
+
+  private async localWriteFile(input: any, targetRoot?: vscode.Uri) {
+    const { uri, rel } = this.resolveWorkspaceToolPath(String(input?.path || ""), targetRoot);
+    const content = String(input?.content ?? "");
+    if (!content && input?.content !== "") throw new Error("Missing content parameter.");
+    this.assertTextSyntax(rel, content);
+    const createDirectories = input?.createDirectories !== false;
+    if (createDirectories) {
+      const dirUri = vscode.Uri.joinPath(uri, "..");
+      try {
+        await vscode.workspace.fs.stat(dirUri);
+      } catch {
+        await vscode.workspace.fs.createDirectory(dirUri);
+      }
+    }
+    const bytes = Buffer.from(content, "utf8");
+    await vscode.workspace.fs.writeFile(uri, bytes);
+    const lines = content.split(/\r?\n/).length;
+    return `Successfully wrote ${rel} (${lines} lines, ${bytes.length} bytes).`;
+  }
+
+  private async localEditFile(input: any, targetRoot?: vscode.Uri) {
+    const { uri, rel } = this.resolveWorkspaceToolPath(String(input?.path || ""), targetRoot);
+    const edits = Array.isArray(input?.edits) ? input.edits : [];
+    if (edits.length === 0) throw new Error("Missing or empty edits array.");
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    let content = Buffer.from(bytes).toString("utf8");
+    const results: string[] = [];
+    for (let i = 0; i < edits.length; i++) {
+      const edit = edits[i];
+      const find = String(edit?.find ?? "");
+      const replace = String(edit?.replace ?? "");
+      if (!find) {
+        results.push(`Edit ${i + 1}: FAILED - empty find string`);
+        continue;
+      }
+      if (!content.includes(find)) {
+        results.push(`Edit ${i + 1}: FAILED - text not found: "${find.slice(0, 60)}${find.length > 60 ? "..." : ""}"`);
+        continue;
+      }
+      content = content.replace(find, replace);
+      results.push(`Edit ${i + 1}: OK - replaced ${find.length} chars with ${replace.length} chars`);
+    }
+    this.assertTextSyntax(rel, content);
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
+    return `Edited ${rel}:\n${results.join("\n")}`;
   }
 
   private async localListFiles(input: any, targetRoot?: vscode.Uri) {
@@ -1338,7 +1444,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       "**/{node_modules,.git,dist,build,out,venv,.venv,__pycache__,coverage,.next}/**",
       400
     );
-    const re = regex ? new RegExp(query, "i") : undefined;
+    let re: RegExp | undefined;
+    let regexFallbackNotice = "";
+    if (regex) {
+      try {
+        re = new RegExp(query, "i");
+      } catch (error) {
+        regexFallbackNotice = `Invalid regex, searched literally instead: ${String(error)}`;
+      }
+    }
     const needle = query.toLowerCase();
     const matches: string[] = [];
     for (const uri of files) {
@@ -1359,7 +1473,69 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // Ignore unreadable files.
       }
     }
-    return matches.join("\n") || "(no matches)";
+    const body = matches.join("\n") || "(no matches)";
+    return regexFallbackNotice ? `${regexFallbackNotice}\n${body}` : body;
+  }
+
+  private isSyntaxCheckedSourceFile(relPath: string) {
+    return /\.(jsx?|tsx?)$/i.test(relPath) &&
+      !/(^|\/)(node_modules|dist|build|out|coverage|\.next)\//i.test(relPath);
+  }
+
+  private scriptKindForPath(relPath: string) {
+    const lower = relPath.toLowerCase();
+    if (lower.endsWith(".tsx")) return ts.ScriptKind.TSX;
+    if (lower.endsWith(".ts")) return ts.ScriptKind.TS;
+    if (lower.endsWith(".jsx")) return ts.ScriptKind.JSX;
+    return ts.ScriptKind.JS;
+  }
+
+  private assertTextSyntax(relPath: string, text: string) {
+    if (!this.isSyntaxCheckedSourceFile(relPath)) return;
+    if (text.includes("\u0000")) return;
+    const compilerOptions: ts.CompilerOptions = {
+      allowJs: true,
+      checkJs: false,
+      jsx: ts.JsxEmit.ReactJSX,
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext
+    };
+    const result = ts.transpileModule(text, {
+      fileName: relPath,
+      reportDiagnostics: true,
+      compilerOptions
+    });
+    const diagnostics = (result.diagnostics || []).filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+    if (diagnostics.length === 0) return;
+
+    const formatted = diagnostics.slice(0, 5).map((diagnostic) => {
+      const pos = typeof diagnostic.start === "number"
+        ? ts.getLineAndCharacterOfPosition(ts.createSourceFile(relPath, text, ts.ScriptTarget.ES2022, true, this.scriptKindForPath(relPath)), diagnostic.start)
+        : undefined;
+      const location = pos ? `${relPath}:${pos.line + 1}:${pos.character + 1}` : relPath;
+      return `${location} - ${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`;
+    }).join("\n");
+    throw new Error(`Syntax check failed for ${relPath}. Fix the JSX/TypeScript format before continuing:\n${formatted}`);
+  }
+
+  private async assertChangedSourceSyntax(diff: string, targetRoot?: vscode.Uri) {
+    const root = targetRoot || vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!root) return;
+    const seen = new Set<string>();
+    for (const patch of parseUnifiedDiff(diff)) {
+      const relPath = patch.filePath || patch.newPath || patch.oldPath;
+      if (!relPath || seen.has(relPath) || !this.isSyntaxCheckedSourceFile(relPath)) continue;
+      seen.add(relPath);
+      try {
+        const uri = vscode.Uri.joinPath(root, relPath);
+        const stat = await vscode.workspace.fs.stat(uri);
+        if (stat.type === vscode.FileType.Directory) continue;
+        const text = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
+        this.assertTextSyntax(relPath, text);
+      } catch (error) {
+        if (String(error).includes("Syntax check failed")) throw error;
+      }
+    }
   }
 
   private summarizeToolResult(resultText: string) {
@@ -1439,6 +1615,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async localRunSafeCommand(input: any, cwd: string, webview: vscode.Webview) {
     const command = String(input?.command || "").trim();
     if (!command) throw new Error("Missing command.");
+    if (this.isVerificationCommand(command)) {
+      return await this.runLocalCommandTool(command, cwd, webview);
+    }
     if (!this.isSafeInspectionCommand(command)) {
       throw new Error("Refusing to run a non-inspection command through run_safe_command. Use run_verification for build/test/lint, or propose a command for user approval.");
     }
@@ -1448,10 +1627,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async localRunVerification(input: any, cwd: string, webview: vscode.Webview) {
     const command = String(input?.command || "").trim();
     if (!command) throw new Error("Missing verification command.");
-    if (!/\b(test|build|typecheck|lint|pytest|jest|tsc|py_compile|cargo test|go test)\b/i.test(command)) {
-      throw new Error("Refusing to run a non-verification command through run_verification.");
+    if (!this.isVerificationCommand(command)) {
+      throw new Error("Refusing to run a non-verification command through run_verification. Use build/test/typecheck/lint/check commands only.");
     }
     return await this.runLocalCommandTool(command, cwd, webview);
+  }
+
+  private isVerificationCommand(command: string) {
+    const trimmed = command.trim();
+    if (!trimmed) return false;
+    if (/\b(--fix|--write|install|add|remove|uninstall|publish|deploy|start|dev|serve)\b/i.test(trimmed)) return false;
+    if (/^(npm|pnpm|yarn|bun)\s+(run\s+)?[^\s]*(fix|write)[^\s]*(\s|$)/i.test(trimmed)) return false;
+
+    const scriptName = "(build|test|lint|type-?check|tsc|check|validate|ci|format:check|check:format|format-check|check-format)(:[A-Za-z0-9_-]+)?";
+    const packageScript = new RegExp(`^(npm|pnpm|yarn|bun)\\s+(run\\s+)?${scriptName}(\\s|$)`, "i");
+    if (packageScript.test(trimmed)) return true;
+
+    return /^(npm|pnpm|yarn|bun)\s+test(\s|$)/i.test(trimmed) ||
+      /^(npx\s+)?(tsc|eslint|jest|vitest|mocha|pytest|ruff|mypy)\b/i.test(trimmed) ||
+      /^(npx\s+)?prettier\b(?=.*\s--check(\s|$))/i.test(trimmed) ||
+      /^(npx\s+)?(vite|next|react-scripts)\s+build(\s|$)/i.test(trimmed) ||
+      /^python3?\s+-m\s+(py_compile|pytest|mypy|ruff)\b/i.test(trimmed) ||
+      /\b(cargo\s+test|go\s+test)\b/i.test(trimmed);
   }
 
   private async localApplyUnifiedDiff(input: any, targetRoot: vscode.Uri | undefined, webview: vscode.Webview) {
@@ -2532,6 +2729,16 @@ ${diff}
       try {
         const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
         const scripts = pkg?.scripts || {};
+        const hasChangedFrontend = changedFiles.some((file) => /\.(tsx?|jsx?|css|scss|html|json)$/i.test(file));
+        if (hasChangedFrontend) {
+          if (scripts.lint) add("npm run lint");
+          if (scripts.typecheck) add("npm run typecheck");
+          else if (scripts["type-check"]) add("npm run type-check");
+          else if (scripts.tsc) add("npm run tsc");
+          if (scripts.check) add("npm run check");
+          else if (scripts["format:check"]) add("npm run format:check");
+          else if (scripts["check:format"]) add("npm run check:format");
+        }
         if (scripts.build) {
           add("npm run build");
         } else if (scripts["build:ext"]) {
@@ -2672,10 +2879,15 @@ ${diff}
   private async discardChangeSet(id: string, targetRoot?: vscode.Uri) {
     const changeSet = this.appliedChangeSets.get(id);
     if (!changeSet) throw new Error("change set is no longer available");
+    await this.restoreSnapshots(changeSet.snapshots, targetRoot);
+    this.appliedChangeSets.delete(id);
+  }
+
+  private async restoreSnapshots(snapshots: FileSnapshot[], targetRoot?: vscode.Uri) {
     const root = targetRoot || vscode.workspace.workspaceFolders?.[0]?.uri;
     if (!root) throw new Error("No workspace root is available for restore.");
 
-    for (const snapshot of changeSet.snapshots) {
+    for (const snapshot of snapshots) {
       const uri = vscode.Uri.joinPath(root, snapshot.path);
       if (snapshot.existed) {
         await this.ensureParentDirectory(uri);
@@ -2688,8 +2900,6 @@ ${diff}
         }
       }
     }
-
-    this.appliedChangeSets.delete(id);
   }
 
   private async ensureParentDirectory(uri: vscode.Uri) {
@@ -2742,8 +2952,14 @@ ${diff}
     const prepared = await this.prepareDiffForApply(diff, reason, targetRoot);
     if (!prepared.trim()) return "";
     try {
-      const snapshots = changeSetId ? await this.snapshotFilesForDiff(prepared, targetRoot) : [];
+      const snapshots = await this.snapshotFilesForDiff(prepared, targetRoot);
       await applyUnifiedDiffToWorkspaceSmart(prepared, this.output, { rootUri: targetRoot });
+      try {
+        await this.assertChangedSourceSyntax(prepared, targetRoot);
+      } catch (syntaxError) {
+        await this.restoreSnapshots(snapshots, targetRoot);
+        throw syntaxError;
+      }
       if (changeSetId) {
         this.appliedChangeSets.set(changeSetId, {
           id: changeSetId,
@@ -2771,8 +2987,14 @@ ${diff}
       }
       await preflightUnifiedDiffAgainstWorkspace(repaired, { rootUri: targetRoot });
       try {
-        const snapshots = changeSetId ? await this.snapshotFilesForDiff(repaired, targetRoot) : [];
+        const snapshots = await this.snapshotFilesForDiff(repaired, targetRoot);
         await applyUnifiedDiffToWorkspaceSmart(repaired, this.output, { rootUri: targetRoot });
+        try {
+          await this.assertChangedSourceSyntax(repaired, targetRoot);
+        } catch (syntaxError) {
+          await this.restoreSnapshots(snapshots, targetRoot);
+          throw syntaxError;
+        }
         if (changeSetId) {
           this.appliedChangeSets.set(changeSetId, {
             id: changeSetId,
@@ -2796,8 +3018,14 @@ ${diff}
           return "";
         }
         await preflightUnifiedDiffAgainstWorkspace(secondRepair, { rootUri: targetRoot });
-        const snapshots = changeSetId ? await this.snapshotFilesForDiff(secondRepair, targetRoot) : [];
+        const snapshots = await this.snapshotFilesForDiff(secondRepair, targetRoot);
         await applyUnifiedDiffToWorkspaceSmart(secondRepair, this.output, { rootUri: targetRoot });
+        try {
+          await this.assertChangedSourceSyntax(secondRepair, targetRoot);
+        } catch (syntaxError) {
+          await this.restoreSnapshots(snapshots, targetRoot);
+          throw syntaxError;
+        }
         if (changeSetId) {
           this.appliedChangeSets.set(changeSetId, {
             id: changeSetId,

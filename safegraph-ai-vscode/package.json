@@ -1,12 +1,12 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.18.0",
+  "displayName": "Safegraph AI v0.18.3",
   "description": "Claude Haiku 4.5 powered AI coding IDE for VS Code: inline ghost-text completion, agentic chat, inline edits, and project-wide refactoring.",
   "repository": {
     "type": "git",
     "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
   },
-  "version": "0.18.0",
+  "version": "0.18.3",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
@@ -111,7 +111,7 @@
       }
     ],
     "configuration": {
-      "title": "Safegraph AI v0.18.0",
+      "title": "Safegraph AI v0.18.3",
       "properties": {
         "safegraph.autoRun": {
           "type": "string",
@@ -303,7 +303,7 @@
       "activitybar": [
         {
           "id": "safegraph",
-          "title": "Safegraph AI v0.18.0",
+          "title": "Safegraph AI v0.18.3",
           "icon": "media/icon.svg"
         }
       ]

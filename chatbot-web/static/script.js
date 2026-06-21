@@ -1,519 +1,251 @@
-const chatBox = document.getElementById('chatBox');
+// ── DOM Elements ──────────────────────────────────────────────────
+const apiKeyModal = document.getElementById('apiKeyModal');
+const apiKeyInput = document.getElementById('apiKeyInput');
+const connectBtn = document.getElementById('connectBtn');
+const toggleApiKeyVisibility = document.getElementById('toggleApiKeyVisibility');
+const apiKeyError = document.getElementById('apiKeyError');
+const apiKeyBtn = document.getElementById('apiKeyBtn');
+const chatContainer = document.getElementById('chatContainer');
 const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const clearBtn = document.getElementById('clearBtn');
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsPanel = document.getElementById('settingsPanel');
-const closeSettingsBtn = document.getElementById('closeSettings');
+const closeSettings = document.getElementById('closeSettings');
 const tokenCounter = document.getElementById('tokenCounter');
+const systemPromptInput = document.getElementById('systemPromptInput');
+const maxTokensValue = document.getElementById('maxTokensValue');
+const tempSlider = document.getElementById('tempSlider');
+const tempValue = document.getElementById('tempValue');
 
+// ── State ─────────────────────────────────────────────────────────
+let apiKey = null;
+let totalTokens = 0;
+let messages = [];
 let isLoading = false;
+
+// ── API Key Management ────────────────────────────────────────────
+connectBtn.addEventListener('click', async () => {
+    const key = apiKeyInput.value.trim();
+    if (!key) {
+        showApiKeyError('Please enter an API key');
+        return;
+    }
+    connectBtn.disabled = true;
+    connectBtn.textContent = 'Connecting...';
+    
+    try {
+        // Test API key with a simple health check
+        const response = await fetch('/health');
+        if (response.ok) {
+            apiKey = key;
+            apiKeyModal.style.display = 'none';
+            chatContainer.style.display = 'flex';
+            messageInput.focus();
+            addMessage('Connected! How can I help you?', 'system');
+            apiKeyError.style.display = 'none';
+        } else {
+            showApiKeyError('Failed to connect. Check your API key.');
+        }
+    } catch (error) {
+        showApiKeyError(`Connection error: ${error.message}`);
+    } finally {
+        connectBtn.disabled = false;
+        connectBtn.textContent = 'Connect';
+    }
+});
+
+toggleApiKeyVisibility.addEventListener('click', () => {
+    const isPassword = apiKeyInput.type === 'password';
+    apiKeyInput.type = isPassword ? 'text' : 'password';
+    toggleApiKeyVisibility.textContent = isPassword ? 'Hide' : 'Show';
+});
+
+apiKeyBtn.addEventListener('click', () => {
+    apiKey = null;
+    messages = [];
+    totalTokens = 0;
+    chatBox.replaceChildren();
+    apiKeyModal.style.display = 'flex';
+    chatContainer.style.display = 'none';
+    apiKeyInput.value = '';
+    apiKeyInput.type = 'password';
+    toggleApiKeyVisibility.textContent = 'Show';
+});
+
+function showApiKeyError(message) {
+    apiKeyError.textContent = message;
+    apiKeyError.style.display = 'block';
+}
 
 // ── Settings ──────────────────────────────────────────────────────
 settingsBtn.addEventListener('click', () => {
     settingsPanel.style.display = settingsPanel.style.display === 'none' ? 'block' : 'none';
-    loadConfig();
 });
-closeSettingsBtn.addEventListener('click', () => {
+
+closeSettings.addEventListener('click', () => {
     settingsPanel.style.display = 'none';
 });
 
-document.getElementById('maxTokensSlider').addEventListener('input', (e) => {
-    document.getElementById('maxTokensValue').textContent = e.target.value;
-    updateSettings();
-});
-document.getElementById('tempSlider').addEventListener('input', (e) => {
-    document.getElementById('tempValue').textContent = e.target.value;
-    updateSettings();
-});
-document.getElementById('toolsToggle').addEventListener('change', () => {
-    updateSettings();
-});
-document.getElementById('saveSystemPrompt').addEventListener('click', () => {
-    const prompt = document.getElementById('systemPromptInput').value;
-    fetch('/config/system_prompt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ system_prompt: prompt })
-    })
-    .then(r => r.json())
-    .then(() => addMessage('System prompt updated!', 'system'))
-    .catch(e => console.error('Error saving system prompt:', e));
+maxTokensSlider.addEventListener('input', (e) => {
+    maxTokensValue.textContent = e.target.value;
 });
 
-async function loadConfig() {
-    try {
-        const resp = await fetch('/config');
-        const cfg = await resp.json();
-        document.getElementById('systemPromptInput').value = cfg.system_prompt || '';
-        document.getElementById('maxTokensSlider').value = cfg.max_tokens || 8192;
-        document.getElementById('maxTokensValue').textContent = cfg.max_tokens || 8192;
-        document.getElementById('tempSlider').value = cfg.temperature || 0.7;
-        document.getElementById('tempValue').textContent = cfg.temperature || 0.7;
-        document.getElementById('toolsToggle').checked = cfg.tools_enabled !== false;
-        if (cfg.token_usage) {
-            updateTokenCounter(cfg.token_usage);
-        }
-    } catch (e) {
-        console.error('Error loading config:', e);
-    }
-}
-
-async function updateSettings() {
-    try {
-        await fetch('/config/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                max_tokens: parseInt(document.getElementById('maxTokensSlider').value),
-                temperature: parseFloat(document.getElementById('tempSlider').value),
-                enable_tools: document.getElementById('toolsToggle').checked
-            })
-        });
-    } catch (e) {
-        console.error('Error updating settings:', e);
-    }
-}
-
-function updateTokenCounter(usage) {
-    if (usage) {
-        const total = usage.total_tokens || 0;
-        const tools = usage.tool_calls || 0;
-        tokenCounter.textContent = `${total.toLocaleString()} tokens · ${tools} tools`;
-    }
-}
-
-// ── Chat ──────────────────────────────────────────────────────────
-sendBtn.addEventListener('click', sendMessage);
-
-messageInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter' && !isLoading) {
-        sendMessage();
-    }
+tempSlider.addEventListener('input', (e) => {
+    tempValue.textContent = e.target.value;
 });
 
+// ── Chat Functions ───────────────────────────────────────────────
 async function sendMessage() {
-    const message = messageInput.value.trim();
-    if (!message || isLoading) return;
-
+    if (isLoading || !apiKey) return;
+    
+    const userMessage = messageInput.value.trim();
+    if (!userMessage) return;
+    
+    messageInput.value = '';
+    addMessage(userMessage, 'user');
     isLoading = true;
     sendBtn.disabled = true;
-    messageInput.disabled = true;
-
-    addMessage(message, 'user');
-    messageInput.value = '';
-
-    const loadingId = addLoadingMessage();
-
-    try {
-        const response = await fetch('/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message })
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-
-        removeMessage(loadingId);
-
-        // Show tool events if any
-        if (data.tool_events && data.tool_events.length > 0) {
-            for (const evt of data.tool_events) {
-                if (evt.type === 'tool_call') {
-                    addToolCallMessage(evt.name, evt.input);
-                } else if (evt.type === 'tool_result') {
-                    addToolResultMessage(evt.name, evt.result, evt.status);
-                }
-            }
-        }
-
-        // Show final assistant message
-        addMessage(data.message, 'assistant');
-
-        // Update token counter
-        if (data.token_usage) {
-            updateTokenCounter(data.token_usage);
-        }
-    } catch (error) {
-        console.error('Error:', error);
-        removeMessage(loadingId);
-        addMessage(`Error: ${error.message}`, 'assistant');
-    } finally {
-        isLoading = false;
-        sendBtn.disabled = false;
-        messageInput.disabled = false;
-        messageInput.focus();
-    }
-}
-
-// ── Message rendering ─────────────────────────────────────────────
-function addMessage(text, role) {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${role}`;
-
-    if (role === 'assistant') {
-        messageDiv.appendChild(renderMarkdown(text));
-    } else {
-        messageDiv.textContent = text;
-    }
-
-    chatBox.appendChild(messageDiv);
-    chatBox.scrollTop = chatBox.scrollHeight;
-    return messageDiv;
-}
-
-function addToolCallMessage(name, input) {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message tool-call';
-
-    const header = document.createElement('div');
-    header.className = 'tool-call-header';
-    header.textContent = `🔧 Tool Call: ${name}`;
-
-    const body = document.createElement('pre');
-    body.className = 'tool-call-body';
-    let inputStr = JSON.stringify(input, null, 2);
-    if (inputStr.length > 500) inputStr = inputStr.substring(0, 500) + '...';
-    body.textContent = inputStr;
-
-    messageDiv.appendChild(header);
-    messageDiv.appendChild(body);
-    chatBox.appendChild(messageDiv);
-    chatBox.scrollTop = chatBox.scrollHeight;
-}
-
-function addToolResultMessage(name, result, status) {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message tool-result';
-
-    const icon = status === 'success' ? '✅' : '⚠️';
-    const header = document.createElement('div');
-    header.className = 'tool-result-header';
-    header.textContent = `${icon} Tool Result: ${name}`;
-
-    const body = document.createElement('pre');
-    body.className = 'tool-result-body';
-    let displayResult = result || '(no output)';
-    if (displayResult.length > 1500) displayResult = displayResult.substring(0, 1500) + '...';
-    body.textContent = displayResult;
-
-    messageDiv.appendChild(header);
-    messageDiv.appendChild(body);
-    chatBox.appendChild(messageDiv);
-    chatBox.scrollTop = chatBox.scrollHeight;
-}
-
-function renderMarkdown(text) {
-    const fragment = document.createDocumentFragment();
-    const codeFencePattern = /```([\w#+.-]*)\s*\n([\s\S]*?)```/g;
-    let lastIndex = 0;
-    let match;
-
-    while ((match = codeFencePattern.exec(text)) !== null) {
-        appendFormattedText(fragment, text.slice(lastIndex, match.index));
-        appendCodeBlock(fragment, match[2].replace(/\n$/, ''), match[1] || 'text');
-        lastIndex = codeFencePattern.lastIndex;
-    }
-
-    appendFormattedText(fragment, text.slice(lastIndex));
-    return fragment;
-}
-
-function appendFormattedText(parent, text) {
-    const normalized = text.replace(/\r\n/g, '\n').trim();
-    if (!normalized) return;
-
-    const blocks = normalized.split(/\n{2,}/);
-    blocks.forEach((block) => {
-        if (/^\s*[-*]\s+/m.test(block)) {
-            const list = document.createElement('ul');
-            block.split('\n').forEach((line) => {
-                const itemText = line.replace(/^\s*[-*]\s+/, '').trim();
-                if (!itemText) return;
-                const item = document.createElement('li');
-                appendInlineText(item, itemText);
-                list.appendChild(item);
-            });
-            parent.appendChild(list);
-            return;
-        }
-
-        const paragraph = document.createElement('p');
-        appendInlineText(paragraph, block.replace(/\n/g, ' '));
-        parent.appendChild(paragraph);
-    });
-}
-
-function appendInlineText(parent, text) {
-    const inlineCodePattern = /`([^`]+)`/g;
-    let lastIndex = 0;
-    let match;
-
-    while ((match = inlineCodePattern.exec(text)) !== null) {
-        parent.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
-        const code = document.createElement('code');
-        code.textContent = match[1];
-        parent.appendChild(code);
-        lastIndex = inlineCodePattern.lastIndex;
-    }
-
-    parent.appendChild(document.createTextNode(text.slice(lastIndex)));
-}
-
-function appendCodeBlock(parent, codeText, language) {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'code-block';
-
-    const header = document.createElement('div');
-    header.className = 'code-header';
-
-    const label = document.createElement('span');
-    label.textContent = language.toLowerCase();
-
-    const copyButton = document.createElement('button');
-    copyButton.type = 'button';
-    copyButton.className = 'copy-code-btn';
-    copyButton.textContent = 'Copy';
-    copyButton.addEventListener('click', async () => {
-        try {
-            await navigator.clipboard.writeText(codeText);
-            copyButton.textContent = 'Copied';
-            setTimeout(() => { copyButton.textContent = 'Copy'; }, 1200);
-        } catch (error) {
-            copyButton.textContent = 'Failed';
-            setTimeout(() => { copyButton.textContent = 'Copy'; }, 1200);
-        }
-    });
-
-    const pre = document.createElement('pre');
-    const code = document.createElement('code');
-    code.className = `language-${language.toLowerCase()}`;
-    code.textContent = codeText;
-    pre.appendChild(code);
-
-    header.append(label, copyButton);
-    wrapper.append(header, pre);
-    parent.appendChild(wrapper);
-}
-
-function addLoadingMessage() {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message loading';
-    messageDiv.id = 'loading-' + Date.now();
-    messageDiv.innerHTML = '<div class="loading-dots"><span></span><span></span><span></span></div>';
-    chatBox.appendChild(messageDiv);
-    chatBox.scrollTop = chatBox.scrollHeight;
-    return messageDiv.id;
-}
-
-function removeMessage(id) {
-    const element = document.getElementById(id);
-    if (element) element.remove();
-}
-
-clearBtn.addEventListener('click', async () => {
-    if (confirm('Clear all chat history?')) {
-        await fetch('/clear', { method: 'POST' });
-        chatBox.replaceChildren();
-        addMessage('Chat history cleared. Start fresh!', 'system');
-    }
-});
-
-// Load config on page load
-loadConfig();
-const chatBox = document.getElementById('chatBox');
-const messageInput = document.getElementById('messageInput');
-const sendBtn = document.getElementById('sendBtn');
-const clearBtn = document.getElementById('clearBtn');
-
-let isLoading = false;
-
-sendBtn.addEventListener('click', sendMessage);
-
-messageInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter' && !isLoading) {
-        sendMessage();
-    }
-});
-
-async function sendMessage() {
-    const message = messageInput.value.trim();
-
-    if (!message || isLoading) return;
-
-    isLoading = true;
-    sendBtn.disabled = true;
-    messageInput.disabled = true;
-
-    addMessage(message, 'user');
-    messageInput.value = '';
-
-    const loadingId = addLoadingMessage();
-
+    
+    const loadingId = addMessage('Thinking...', 'assistant');
+    
     try {
         const response = await fetch('/chat', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ message })
+            body: JSON.stringify({
+                api_key: apiKey,
+                message: userMessage,
+                messages: messages,
+                system_prompt: systemPromptInput.value,
+                max_tokens: parseInt(maxTokensSlider.value),
+                temperature: parseFloat(tempSlider.value)
+            })
         });
-
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
+        
         const data = await response.json();
-
+        
+        if (!response.ok) {
+            removeMessage(loadingId);
+            const errorMsg = data.error || `Error: ${response.status}`;
+            addMessage(`❌ ${errorMsg}`, 'error');
+            
+            if (response.status === 401 || response.status === 403) {
+                setTimeout(() => {
+                    apiKeyBtn.click();
+                }, 2000);
+            }
+            return;
+        }
+        
+        // Update messages history
+        messages.push({ role: 'user', content: userMessage });
+        messages.push({ role: 'assistant', content: data.response });
+        
+        // Update UI
         removeMessage(loadingId);
-        addMessage(data.message, 'assistant');
+        addMessage(data.response, 'assistant');
+        
+        if (data.tokens) {
+            totalTokens += data.tokens;
+            tokenCounter.textContent = `${totalTokens} tokens`;
+        }
     } catch (error) {
-        console.error('Error:', error);
         removeMessage(loadingId);
-        addMessage(`Error: ${error.message}`, 'assistant');
+        addMessage(`❌ Network error: ${error.message}`, 'error');
     } finally {
         isLoading = false;
         sendBtn.disabled = false;
-        messageInput.disabled = false;
         messageInput.focus();
     }
 }
 
-function addMessage(text, role) {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${role}`;
-
-    if (role === 'assistant') {
-        messageDiv.appendChild(renderMarkdown(text));
-    } else {
-        messageDiv.textContent = text;
-    }
-
-    chatBox.appendChild(messageDiv);
-    chatBox.scrollTop = chatBox.scrollHeight;
-    return messageDiv;
-}
-
-function renderMarkdown(text) {
-    const fragment = document.createDocumentFragment();
-    const codeFencePattern = /```([\w#+.-]*)\s*\n([\s\S]*?)```/g;
-    let lastIndex = 0;
-    let match;
-
-    while ((match = codeFencePattern.exec(text)) !== null) {
-        appendFormattedText(fragment, text.slice(lastIndex, match.index));
-        appendCodeBlock(fragment, match[2].replace(/\n$/, ''), match[1] || 'text');
-        lastIndex = codeFencePattern.lastIndex;
-    }
-
-    appendFormattedText(fragment, text.slice(lastIndex));
-    return fragment;
-}
-
-function appendFormattedText(parent, text) {
-    const normalized = text.replace(/\r\n/g, '\n').trim();
-    if (!normalized) return;
-
-    const blocks = normalized.split(/\n{2,}/);
-    blocks.forEach((block) => {
-        if (/^\s*[-*]\s+/m.test(block)) {
-            const list = document.createElement('ul');
-            block.split('\n').forEach((line) => {
-                const itemText = line.replace(/^\s*[-*]\s+/, '').trim();
-                if (!itemText) return;
-                const item = document.createElement('li');
-                appendInlineText(item, itemText);
-                list.appendChild(item);
-            });
-            parent.appendChild(list);
-            return;
-        }
-
-        const paragraph = document.createElement('p');
-        appendInlineText(paragraph, block.replace(/\n/g, ' '));
-        parent.appendChild(paragraph);
-    });
-}
-
-function appendInlineText(parent, text) {
-    const inlineCodePattern = /`([^`]+)`/g;
-    let lastIndex = 0;
-    let match;
-
-    while ((match = inlineCodePattern.exec(text)) !== null) {
-        parent.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
-        const code = document.createElement('code');
-        code.textContent = match[1];
-        parent.appendChild(code);
-        lastIndex = inlineCodePattern.lastIndex;
-    }
-
-    parent.appendChild(document.createTextNode(text.slice(lastIndex)));
-}
-
-function appendCodeBlock(parent, codeText, language) {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'code-block';
-
-    const header = document.createElement('div');
-    header.className = 'code-header';
-
-    const label = document.createElement('span');
-    label.textContent = language.toLowerCase();
-
-    const copyButton = document.createElement('button');
-    copyButton.type = 'button';
-    copyButton.className = 'copy-code-btn';
-    copyButton.textContent = 'Copy';
-    copyButton.addEventListener('click', async () => {
-        try {
-            await navigator.clipboard.writeText(codeText);
-            copyButton.textContent = 'Copied';
-            setTimeout(() => {
-                copyButton.textContent = 'Copy';
-            }, 1200);
-        } catch (error) {
-            copyButton.textContent = 'Failed';
-            setTimeout(() => {
-                copyButton.textContent = 'Copy';
-            }, 1200);
-        }
-    });
-
-    const pre = document.createElement('pre');
-    const code = document.createElement('code');
-    code.className = `language-${language.toLowerCase()}`;
-    code.textContent = codeText;
-    pre.appendChild(code);
-
-    header.append(label, copyButton);
-    wrapper.append(header, pre);
-    parent.appendChild(wrapper);
-}
-
-function addLoadingMessage() {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message loading';
-    messageDiv.id = 'loading-' + Date.now();
-    messageDiv.innerHTML = '<div class="loading-dots"><span></span><span></span><span></span></div>';
-    chatBox.appendChild(messageDiv);
-    chatBox.scrollTop = chatBox.scrollHeight;
-    return messageDiv.id;
-}
-
-function removeMessage(id) {
-    const element = document.getElementById(id);
-    if (element) element.remove();
-}
-
-clearBtn.addEventListener('click', async () => {
-    if (confirm('Clear all chat history?')) {
-        await fetch('/clear', { method: 'POST' });
-        chatBox.replaceChildren();
-        addMessage('Chat history cleared. Start fresh!', 'system');
+sendBtn.addEventListener('click', sendMessage);
+messageInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
     }
 });
+
+clearBtn.addEventListener('click', () => {
+    if (confirm('Clear all messages?')) {
+        messages = [];
+        totalTokens = 0;
+        chatBox.replaceChildren();
+        tokenCounter.textContent = '0 tokens';
+        addMessage('Chat cleared. Ready for new conversation.', 'system');
+    }
+});
+
+// ── Message Display ──────────────────────────────────────────────
+function addMessage(text, role) {
+    const messageEl = document.createElement('div');
+    messageEl.className = `message message-${role}`;
+    messageEl.id = `msg-${Date.now()}-${Math.random()}`;
+    
+    const contentEl = document.createElement('div');
+    contentEl.className = 'message-content';
+    
+    // Parse markdown-like formatting
+    const formattedText = parseMessageContent(text);
+    contentEl.appendChild(formattedText);
+    
+    messageEl.appendChild(contentEl);
+    chatBox.appendChild(messageEl);
+    chatBox.scrollTop = chatBox.scrollHeight;
+    
+    return messageEl.id;
+}
+
+function removeMessage(messageId) {
+    const messageEl = document.getElementById(messageId);
+    if (messageEl) {
+        messageEl.remove();
+    }
+}
+
+function parseMessageContent(text) {
+    const container = document.createElement('div');
+    
+    // Split by common markdown patterns
+    const parts = text.split(/(\*\*.*?\*\*|__.*?__|`.*?`|\n|^#{1,6}\s.*?$)/gm);
+    
+    parts.forEach(part => {
+        if (!part) return;
+        
+        // Bold
+        if (part.startsWith('**') && part.endsWith('**')) {
+            const strong = document.createElement('strong');
+            strong.textContent = part.slice(2, -2);
+            container.appendChild(strong);
+        }
+        // Code
+        else if (part.startsWith('`') && part.endsWith('`')) {
+            const code = document.createElement('code');
+            code.textContent = part.slice(1, -1);
+            container.appendChild(code);
+        }
+        // Line break
+        else if (part === '\n') {
+            container.appendChild(document.createElement('br'));
+        }
+        // Heading
+        else if (part.match(/^#{1,6}\s/)) {
+            const level = part.match(/^#+/)[0].length;
+            const heading = document.createElement(`h${level}`);
+            heading.textContent = part.replace(/^#+\s/, '');
+            container.appendChild(heading);
+        }
+        // Plain text
+        else {
+            const span = document.createElement('span');
+            span.textContent = part;
+            container.appendChild(span);
+        }
+    });
+    
+    return container;
+}
