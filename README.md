@@ -237,11 +237,15 @@ Do not commit real `.env` files or real API keys.
 
 ## Repository Layout
 
+The maintained product is the VS Code extension in `safegraph-ai-vscode/`.
+`legacy/` contains earlier Flask/Streamlit prototypes and is not production-supported.
+
 ```text
 .
 ├── safegraph-ai-vscode/       # Main VS Code extension source and packaged VSIX builds
-├── chatbot-web/               # Flask web chatbot prototype using Bedrock API keys
-├── src/                       # Streamlit app and credential setup scripts
+├── legacy/
+│   ├── chatbot-web/           # Legacy Flask web chatbot prototype
+│   └── streamlit-prototype/   # Legacy Streamlit app prototype
 ├── docs/                      # Setup, credential, and usage notes
 ├── config/                    # Python requirements and env examples
 ├── examples/                  # Bedrock usage examples
