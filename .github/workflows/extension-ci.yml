@@ -1,0 +1,28 @@
+name: extension-ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  safegraph-ai-vscode:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: safegraph-ai-vscode
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: npm
+          cache-dependency-path: safegraph-ai-vscode/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:ci
+      - run: npm run build
+      - run: npm run package
