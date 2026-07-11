@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.18.3] - 2026-07-11
+
+### Changed
+- **Repository Hygiene**: Removed `.safegraph-venv`, `.session-history`, and `*.vsix` artifacts from the git repository.
+- **Version Alignment**: Synchronized extension version metadata to 0.18.3 across `README.md`, `package.json`, and `CHANGELOG.md`.
+
 ## [0.17.0] - 2026-06-10
 
 ### Added

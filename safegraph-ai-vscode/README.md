@@ -2,7 +2,7 @@
 
 Safegraph AI is a multi-agent AI development platform built for Bedrock-backed autonomous development workflows. It combines sidebar chat, repository context, live diff application, terminal verification, task memory, artifact verification, and project-wide refactoring inside the editor.
 
-Current release: `v0.16.0`
+Current release: `v0.18.3`
 
 ## What It Does
 
@@ -142,7 +142,7 @@ What Safegraph learns from Bedrock-Coder:
 Install the packaged VSIX:
 
 ```sh
-code --install-extension safegraph-ai-0.16.0.vsix --force
+code --install-extension safegraph-ai-0.18.3.vsix --force
 ```
 
 Verify installation:
@@ -154,7 +154,7 @@ code --list-extensions --show-versions | grep safegraph
 Expected:
 
 ```text
-safegraph.safegraph-ai@0.16.0
+safegraph.safegraph-ai@0.18.3
 ```
 
 ## Configuration

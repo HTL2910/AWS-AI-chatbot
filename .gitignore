@@ -1,7 +1,7 @@
 # Environment variables
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # AWS credentials
 ~/.aws/credentials
@@ -86,3 +86,4 @@ coverage/
 releases/
 *.vsix
 .session-history/
+.safegraph-venv/
