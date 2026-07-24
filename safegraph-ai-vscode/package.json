@@ -130,8 +130,8 @@
         },
         "safegraph.modelId": {
           "type": "string",
-          "default": "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623",
-          "description": "Bedrock model identifier or inference profile ARN. Defaults to a profile that resolves to Claude Haiku 4.5. For direct invocation use anthropic.claude-haiku-4-5-20251001-v1:0 (or a regional/global inference profile of it)."
+          "default": "",
+          "description": "Bedrock model identifier or inference profile ARN. Leave empty to prompt user. For direct invocation use anthropic.claude-haiku-4-5-20251001-v1:0 (or a regional/global inference profile of it)."
         },
         "safegraph.repositoryRag.enabled": {
           "type": "boolean",
@@ -342,6 +342,8 @@
     "package": "npm run build && node scripts/package-vsix.js"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1094.0",
+    "@aws-sdk/credential-providers": "^3.1094.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "axios": "^1.6.0",
     "typescript": "^5.5.4"
@@ -352,10 +354,10 @@
     "@types/node": "^20.12.12",
     "@types/vscode": "^1.90.0",
     "@typescript-eslint/eslint-plugin": "^7.10.0",
-    "@vscode/vsce": "^2.26.0",
     "@typescript-eslint/parser": "^7.10.0",
-    "jest": "^29.7.0",
+    "@vscode/vsce": "^2.26.0",
     "eslint": "^8.57.0",
+    "jest": "^29.7.0",
     "prettier": "^3.2.5",
     "ts-jest": "^29.1.2",
     "ts-node": "^10.9.2",

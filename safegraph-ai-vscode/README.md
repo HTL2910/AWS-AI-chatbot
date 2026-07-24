@@ -6,9 +6,9 @@ Current release: `v0.18.3`
 
 ## What It Does
 
-- **Multi-Agent Orchestration**: Coordinate specialized agents (Planner, Coder, Tester, Reviewer, Debugger, Architect) for complex tasks
-- **Artifact-Based Verification**: Generate tangible deliverables (task lists, implementation plans, test reports, code reviews) for verification
-- **Asynchronous Task Execution**: Run long-running tasks in the background with progress tracking
+- **Multi-Agent Orchestration**: Coordinate specialized agents (Planner, Coder, Tester, Reviewer, Debugger, Architect) for complex tasks *(Planned)*
+- **Artifact-Based Verification**: Generate tangible deliverables (task lists, implementation plans, test reports, code reviews) for verification *(Scaffold only)*
+- **Asynchronous Task Execution**: Run long-running tasks in the background with progress tracking *(Experimental)*
 - **AI-Powered Inline Completion**: Context-aware code suggestions powered by Bedrock
 - **Multi-File Editing**: Project-wide refactoring with dependency analysis and conflict resolution
 - **Repository Context**: Understands the active workspace, active file, selected text, tagged files, diagnostics, git state, and recent task history
@@ -24,7 +24,7 @@ Current release: `v0.18.3`
 - **Evidence Reports**: Produces an evidence report when a task completes, including changed files, commands run, verification status, and remaining risk
 - **Status Bar Integration**: Shows the current Safegraph task state in the VS Code status bar for quick visibility
 
-## New in v0.16.0
+## New in v0.18.3
 
 ### Multi-Agent System
 - **Agent Manager**: Orchestrate multiple specialized agents working in parallel
@@ -57,11 +57,11 @@ Current release: `v0.18.3`
 
 ## Current AI Capabilities
 
-Safegraph AI v0.16.0 is a full-featured autonomous AI development platform:
+Safegraph AI v0.18.3 is a full-featured autonomous AI development platform:
 
-- **Multi-Agent Coordination**: Specialized agents work together on complex tasks
-- **Artifact-First Verification**: Tangible deliverables for trust and validation
-- **Background Task Execution**: Long-running tasks don't block your workflow
+- **Multi-Agent Coordination**: Specialized agents work together on complex tasks *(Planned)*
+- **Artifact-First Verification**: Tangible deliverables for trust and validation *(Scaffold only)*
+- **Background Task Execution**: Long-running tasks don't block your workflow *(Experimental)*
 - **Intelligent Code Completion**: AI-powered suggestions based on deep context analysis
 - **Project-Wide Refactoring**: Safe multi-file editing with dependency awareness
 - **Task Planner State**: Tracks goal, plan steps, files changed, commands executed, verification pass/fail, and open errors
@@ -73,11 +73,11 @@ Safegraph AI v0.16.0 is a full-featured autonomous AI development platform:
 
 ## What Is Better Now
 
-Compared with a basic AI chat extension, Safegraph AI v0.16.0 is stronger in these areas:
+Compared with a basic AI chat extension, Safegraph AI v0.18.3 is stronger in these areas:
 
-- **Multi-Agent Collaboration**: Multiple specialized agents work together on complex tasks
-- **Artifact-Based Trust**: Tangible deliverables (plans, reports, reviews) for verification
-- **Background Processing**: Long-running tasks don't block your workflow
+- **Multi-Agent Collaboration**: Multiple specialized agents work together on complex tasks *(Planned)*
+- **Artifact-Based Trust**: Tangible deliverables (plans, reports, reviews) for verification *(Scaffold only)*
+- **Background Processing**: Long-running tasks don't block your workflow *(Experimental)*
 - **Intelligent Completion**: Context-aware AI code suggestions
 - **Project-Wide Safety**: Dependency-aware multi-file editing with conflict resolution
 - **Continuity**: It remembers the active task and does not treat every follow-up as a new question
@@ -222,11 +222,11 @@ Launch an Extension Development Host:
 1. Open `safegraph-ai-vscode` in VS Code.
 2. Press `F5`.
 
-## v0.16.0 Highlights
+## v0.18.3 Highlights
 
-- Multi-agent orchestration system with specialized agent types
-- Artifact generation and verification for trust and validation
-- Asynchronous task execution with progress tracking
+- Multi-agent orchestration system with specialized agent types *(Planned)*
+- Artifact generation and verification for trust and validation *(Scaffold only)*
+- Asynchronous task execution with progress tracking *(Experimental)*
 - AI-powered inline code completion with context awareness
 - Multi-file editing with dependency analysis and conflict resolution
 - Enhanced task coordination and background processing

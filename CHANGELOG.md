@@ -1,10 +1,16 @@
 # Changelog
 
-## [0.18.3] - 2026-07-11
+## [0.18.3] - 2026-07-24
 
 ### Changed
 - **Repository Hygiene**: Removed `.safegraph-venv`, `.session-history`, and `*.vsix` artifacts from the git repository.
 - **Version Alignment**: Synchronized extension version metadata to 0.18.3 across `README.md`, `package.json`, and `CHANGELOG.md`.
+- **AWS Credentials**: Refactored `bedrockClient.ts` to use `@aws-sdk/client-bedrock-runtime` and standard AWS credential chains, falling back to legacy Bearer token usage if an API key is provided.
+- **Retry Logic**: Refined retry logic in `bedrockConverse` to avoid retry loops on fatal client errors (e.g., 400-404, ValidationException), while maintaining retries for throttling and server-side errors.
+- **Default Config**: Removed hardcoded Safegraph AWS ARN and defaulted `safegraph.modelId` to an empty string.
+
+### Fixed
+- Prevented extension from crashing due to `constư` typo in `src/extension.ts`.
 
 ## [0.17.0] - 2026-06-10
 

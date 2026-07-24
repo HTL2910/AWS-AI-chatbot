@@ -182,7 +182,7 @@ SafeGraph AI records commands and verification results. A completed task include
 Install the latest VSIX:
 
 ```bash
-code --install-extension safegraph-ai-vscode/safegraph-ai-0.18.3.vsix --force
+code --install-extension safegraph-ai-0.18.3.vsix --force
 ```
 
 Verify:
