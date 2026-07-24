@@ -5,7 +5,7 @@ import * as http from "http";
 import * as https from "https";
 import ts from "typescript";
 import { getChatWebviewHtml } from "./webviewHtml";
-import { bedrockConverse, bedrockConverseStream } from "../bedrock/bedrockClient";
+import { bedrockConverse, bedrockConverseStream, BedrockConfigurationError } from "../bedrock/bedrockClient";
 import { buildContext } from "../context/contextBuilder";
 import { maskSensitive } from "../security/mask";
 import { loadBedrockApiKeyFromDotEnv, loadBedrockApiKeyInfos, maskApiKey } from "../config/env";
@@ -825,7 +825,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     this.output.appendLine(`[safegraph-ai] ConverseStream failed, falling back to Converse: ${String(error)}`);
                     return bedrockConverse(nextMessages, responseOptions);
                   });
-              let rawContent = (r.raw as any)?.output?.message?.content || [];
+              let rawContent: any[] = (r.raw as any)?.output?.message?.content || [];
               let stopReason = String(r.stopReason || "");
               combined = (combined + (combined ? "\n" : "") + r.text).trim();
               chunkLoops += 1;
@@ -833,9 +833,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               if (!String(r.text || "").trim() && stopReason !== "tool_use") {
                 throw new Error("Bedrock returned an empty assistant response.");
               }
-              
+
               if (stopReason === "tool_use") {
-                const toolUses = rawContent.filter((c: any) => c.toolUse);
+                const toolUses = rawContent.filter((c: any) => c?.toolUse);
+                if (toolUses.length === 0) {
+                  this.output.appendLine("[safegraph-ai] tool_use stop but rawContent has no toolUse blocks — stream reconstruction incomplete, treating as end");
+                  isDone = true;
+                  break;
+                }
+
                 if (toolUses.length > 0) {
                   messages.push({ role: "assistant", content: rawContent });
                   const toolStatusId = `${msg.id}_tools_${step}`;
@@ -1128,6 +1134,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.output.appendLine("[safegraph-ai] request aborted by user");
             return;
           }
+
+          // Configuration errors: show a descriptive message with an action button
+          // rather than a raw exception dump.
+          if (e instanceof BedrockConfigurationError) {
+            this.output.appendLine(`[safegraph-ai] configuration error: ${e.message}`);
+            const action = await vscode.window.showErrorMessage(
+              e.message,
+              { modal: false },
+              "Open Settings",
+            );
+            if (action === "Open Settings") {
+              vscode.commands.executeCommand(
+                "workbench.action.openSettings",
+                "safegraph.modelId",
+              );
+            }
+            // Also surface in the chat panel so the user sees it inline.
+            const configErr: ExtensionToWebviewMessage = {
+              type: "error",
+              message: e.message,
+              ts: Date.now()
+            };
+            webviewView.webview.postMessage(configErr);
+            return;
+          }
+
           this.output.appendLine(`[safegraph-ai] bedrock error: ${String(e)}`);
           const err: ExtensionToWebviewMessage = {
             type: "error",

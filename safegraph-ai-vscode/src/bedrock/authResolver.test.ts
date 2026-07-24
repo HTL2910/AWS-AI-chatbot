@@ -1,0 +1,74 @@
+import { resolveBedrockTransport } from "./authResolver";
+import { BearerBedrockTransport } from "./transports/bearerBedrockTransport";
+import { SdkBedrockTransport } from "./transports/sdkBedrockTransport";
+import { validateBedrockConfiguration, BedrockConfigurationError } from "./bedrockClient";
+
+describe("authResolver & config validation", () => {
+  describe("resolveBedrockTransport", () => {
+    it("selects BearerBedrockTransport when authMode is bearer-token and token is present", () => {
+      const transport = resolveBedrockTransport({
+        authMode: "bearer-token",
+        bearerToken: "my-secret-token",
+        region: "us-east-1",
+      });
+      expect(transport).toBeInstanceOf(BearerBedrockTransport);
+    });
+
+    it("throws BedrockConfigurationError when authMode is bearer-token but token is missing/empty", () => {
+      expect(() =>
+        resolveBedrockTransport({
+          authMode: "bearer-token",
+          bearerToken: "   ",
+          region: "us-east-1",
+        })
+      ).toThrow(BedrockConfigurationError);
+    });
+
+    it("selects SdkBedrockTransport when authMode is aws-credentials", () => {
+      const transport = resolveBedrockTransport({
+        authMode: "aws-credentials",
+        awsProfile: "dev-profile",
+        region: "ap-southeast-1",
+      });
+      expect(transport).toBeInstanceOf(SdkBedrockTransport);
+    });
+
+    it("in auto mode, picks BearerBedrockTransport if token is present", () => {
+      const transport = resolveBedrockTransport({
+        authMode: "auto",
+        bearerToken: "some-token",
+        region: "us-west-2",
+      });
+      expect(transport).toBeInstanceOf(BearerBedrockTransport);
+    });
+
+    it("in auto mode, picks SdkBedrockTransport if token is missing", () => {
+      const transport = resolveBedrockTransport({
+        authMode: "auto",
+        bearerToken: "",
+        region: "us-west-2",
+      });
+      expect(transport).toBeInstanceOf(SdkBedrockTransport);
+    });
+  });
+
+  describe("validateBedrockConfiguration", () => {
+    it("throws when region is empty", () => {
+      expect(() =>
+        validateBedrockConfiguration({ region: "", modelId: "us.anthropic.claude-3-5-sonnet-20241022-v2:0" })
+      ).toThrow("Amazon Bedrock region is not configured.");
+    });
+
+    it("throws when modelId is empty", () => {
+      expect(() =>
+        validateBedrockConfiguration({ region: "us-east-1", modelId: "" })
+      ).toThrow("No Bedrock model is configured.");
+    });
+
+    it("passes when region and modelId are valid", () => {
+      expect(() =>
+        validateBedrockConfiguration({ region: "us-east-1", modelId: "anthropic.claude-v2" })
+      ).not.toThrow();
+    });
+  });
+});

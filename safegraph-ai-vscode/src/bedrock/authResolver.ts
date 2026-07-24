@@ -1,53 +1,64 @@
 /**
- * AuthResolver — resolves which BedrockTransport to use based on extension config.
+ * authResolver.ts
  *
- * Priority:
- *  1. If `safegraph.authMode === "bearer-token"` (or a non-empty apiKey is provided),
- *     use BearerBedrockTransport.
- *  2. Otherwise use SdkBedrockTransport (IAM / aws-credentials mode),
- *     optionally with a named profile from `safegraph.awsProfile`.
+ * Resolves which BedrockTransport implementation to use, based on
+ * an explicit authMode rather than heuristics on the token string.
+ *
+ * Rules:
+ *  - modelId, bearerToken, and AWS credentials are independent inputs.
+ *  - No string inspection (no startsWith, no length checks).
+ *  - "auto" mode picks Bearer when a token is present, SDK otherwise.
  */
 
-import * as vscode from "vscode";
+import { BedrockConfigurationError } from "./bedrockErrors";
 import type { BedrockTransport } from "./transports/bedrockTransport";
 import { BearerBedrockTransport } from "./transports/bearerBedrockTransport";
 import { SdkBedrockTransport } from "./transports/sdkBedrockTransport";
 
-export type AuthMode = "auto" | "aws-credentials" | "bearer-token";
+export type BedrockAuthMode = "auto" | "aws-credentials" | "bearer-token";
 
-export interface ResolvedTransportConfig {
-  transport: BedrockTransport;
+export interface BedrockAuthOptions {
+  authMode: BedrockAuthMode;
+  bearerToken?: string;
+  awsProfile?: string;
   region: string;
-  modelId: string;
+}
+
+/** TypeScript exhaustiveness helper. */
+function assertNever(value: never): never {
+  throw new Error(`Unhandled authMode: ${String(value)}`);
 }
 
 /**
- * Reads the current workspace configuration and returns the appropriate
- * BedrockTransport for this session.
- *
- * @param apiKeyOverride - Optionally pass an in-memory API key (e.g. from
- *   the chat panel input) without touching extension settings.
+ * Returns the correct BedrockTransport for the given auth options.
+ * Throws BedrockConfigurationError when the configuration is self-contradictory.
  */
-export function resolveTransport(apiKeyOverride?: string): ResolvedTransportConfig {
-  const cfg = vscode.workspace.getConfiguration("safegraph");
+export function resolveBedrockTransport(options: BedrockAuthOptions): BedrockTransport {
+  switch (options.authMode) {
+    case "bearer-token":
+      if (!options.bearerToken?.trim()) {
+        throw new BedrockConfigurationError(
+          "Bearer-token authentication is selected, but no Bedrock API key is configured.\n\n" +
+          "Add AWS_BEARER_TOKEN_BEDROCK to your workspace .env file, or click 'Set Key' in the chat panel.",
+        );
+      }
+      return new BearerBedrockTransport(options.bearerToken.trim());
 
-  const region = String(cfg.get("region") || "ap-southeast-1");
-  const modelId = String(cfg.get("modelId") || "");
-  const authMode = String(cfg.get("authMode") || "auto") as AuthMode;
-  const awsProfile = String(cfg.get("awsProfile") || "").trim() || undefined;
+    case "aws-credentials":
+      return new SdkBedrockTransport({
+        region: options.region,
+        profile: options.awsProfile?.trim() || undefined,
+      });
 
-  // Explicit bearer-token mode OR caller supplied a key directly
-  const apiKey = apiKeyOverride?.trim() || String(cfg.get("apiKey") || "").trim();
-  const useBearerToken =
-    authMode === "bearer-token" || (authMode === "auto" && apiKey.length > 0);
+    case "auto":
+      return options.bearerToken?.trim()
+        ? new BearerBedrockTransport(options.bearerToken.trim())
+        : new SdkBedrockTransport({
+            region: options.region,
+            profile: options.awsProfile?.trim() || undefined,
+          });
 
-  let transport: BedrockTransport;
-  if (useBearerToken) {
-    transport = new BearerBedrockTransport(apiKey);
-  } else {
-    // aws-credentials mode: use SDK + optional profile
-    transport = new SdkBedrockTransport({ region, profile: awsProfile });
+    default:
+      return assertNever(options.authMode);
   }
-
-  return { transport, region, modelId };
 }

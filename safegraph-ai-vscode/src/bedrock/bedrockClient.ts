@@ -7,25 +7,30 @@
  *   - transports/sdkBedrockTransport.ts
  *
  * This module:
- *   1. Normalises input into BedrockConverseRequest.
- *   2. Chooses the correct transport (Bearer vs SDK) via the apiKey heuristic.
- *   3. Wraps stream events into the legacy callback shape (onText).
- *   4. Runs the retry loop via retryPolicy.withRetry.
+ *   1. Validates configuration (fail-fast).
+ *   2. Normalises input into BedrockConverseRequest.
+ *   3. Resolves the correct transport via authResolver (no heuristics).
+ *   4. Wraps stream events into the legacy callback shape (onText).
+ *   5. Runs the retry loop via retryPolicy.withRetry.
  */
 
 import type { BedrockConverseRequest, BedrockMessage, BedrockStreamEvent } from "./bedrockTypes";
-import type { BedrockTransport } from "./transports/bedrockTransport";
-import { BearerBedrockTransport } from "./transports/bearerBedrockTransport";
-import { SdkBedrockTransport } from "./transports/sdkBedrockTransport";
+import { resolveBedrockTransport } from "./authResolver";
+import type { BedrockAuthMode } from "./authResolver";
 import { withRetry } from "./retryPolicy";
-import { isExpiredBearerTokenError } from "./bedrockErrors";
+import { isExpiredBearerTokenError, BedrockConfigurationError } from "./bedrockErrors";
 
 // ── Re-exported types (keeps legacy import paths working) ────────────────────
 
 export type BedrockConverseOptions = {
   region: string;
   modelId: string;
+  /** Bearer token. When absent, falls back to AWS SDK credential chain. */
   apiKey?: string;
+  /** Explicit auth mode; defaults to "auto". */
+  authMode?: BedrockAuthMode;
+  /** Named AWS profile (used when authMode is "aws-credentials" or "auto" without token). */
+  awsProfile?: string;
   system?: string;
   maxTokens?: number;
   temperature?: number;
@@ -46,8 +51,34 @@ export type BedrockConverseStreamCallbacks = {
   onText?: (text: string, fullText: string) => void | Promise<void>;
 };
 
-// Re-export so callers that imported isExpiredBearerTokenError from here still work.
-export { isExpiredBearerTokenError };
+// Re-export so callers that imported from here still work.
+export { isExpiredBearerTokenError, BedrockConfigurationError };
+
+// ── Phase 5: Fail-fast configuration validation ───────────────────────────────
+
+export interface BedrockClientOptions {
+  region: string;
+  modelId: string;
+}
+
+/**
+ * Validates the minimum configuration required to make any Bedrock call.
+ * Throws BedrockConfigurationError with a clear, actionable message.
+ */
+export function validateBedrockConfiguration(options: BedrockClientOptions): void {
+  if (!options.region.trim()) {
+    throw new BedrockConfigurationError("Amazon Bedrock region is not configured.");
+  }
+
+  if (!options.modelId.trim()) {
+    throw new BedrockConfigurationError(
+      "No Bedrock model is configured.\n\n" +
+      "Open Settings and configure:\n" +
+      "  safegraph.modelId\n\n" +
+      "You may use a Bedrock model ID or inference profile ARN.",
+    );
+  }
+}
 
 // ── Input normalisation ───────────────────────────────────────────────────────
 
@@ -82,23 +113,21 @@ function normalizeToRequest(
   };
 }
 
-// ── Transport selection ───────────────────────────────────────────────────────
-
-function selectTransport(options: BedrockConverseOptions): BedrockTransport {
-  if (options.apiKey && options.apiKey.trim().length > 0) {
-    return new BearerBedrockTransport(options.apiKey.trim());
-  }
-  return new SdkBedrockTransport({ region: options.region });
-}
-
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function bedrockConverse(
   input: LegacyInput,
   options: BedrockConverseOptions,
 ): Promise<BedrockConverseResult> {
+  validateBedrockConfiguration(options);
+
   const request = normalizeToRequest(input, options);
-  const transport = selectTransport(options);
+  const transport = resolveBedrockTransport({
+    authMode: options.authMode ?? "auto",
+    bearerToken: options.apiKey,
+    awsProfile: options.awsProfile,
+    region: options.region,
+  });
   const maxRetries = options.retries ?? 2;
 
   return withRetry(
@@ -112,8 +141,15 @@ export async function bedrockConverseStream(
   options: BedrockConverseOptions,
   callbacks: BedrockConverseStreamCallbacks = {},
 ): Promise<BedrockConverseResult> {
+  validateBedrockConfiguration(options);
+
   const request = normalizeToRequest(input, options);
-  const transport = selectTransport(options);
+  const transport = resolveBedrockTransport({
+    authMode: options.authMode ?? "auto",
+    bearerToken: options.apiKey,
+    awsProfile: options.awsProfile,
+    region: options.region,
+  });
   const maxRetries = options.retries ?? 2;
 
   return withRetry(async () => {
@@ -142,11 +178,11 @@ export async function bedrockConverseStream(
 
       if (event.type === "text_delta") {
         fullText = event.fullText;
-        // Also update the text block so raw is consistent
-        const textBlockIndex = Object.keys(blocks).findIndex(
+        // Find the current text block and update it so raw is consistent.
+        const textBlockKey = Object.keys(blocks).find(
           (k) => blocks[Number(k)]?.text !== undefined,
         );
-        const idx = textBlockIndex >= 0 ? Number(Object.keys(blocks)[textBlockIndex]) : 0;
+        const idx = textBlockKey !== undefined ? Number(textBlockKey) : 0;
         if (!blocks[idx]) blocks[idx] = { text: "" };
         blocks[idx].text = (blocks[idx].text ?? "") + event.text;
 
@@ -205,4 +241,3 @@ export async function bedrockConverseText(
   const r = await bedrockConverse(userText, options);
   return r.text;
 }
-

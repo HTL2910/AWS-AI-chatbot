@@ -4,6 +4,14 @@
 
 import type { BedrockConverseResponse } from "./bedrockTypes";
 
+/** Thrown when the extension configuration is incomplete or contradictory. */
+export class BedrockConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BedrockConfigurationError";
+  }
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
