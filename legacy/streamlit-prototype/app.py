@@ -15,12 +15,7 @@ load_dotenv()
 
 BEDROCK_API_KEY_ENV = "AWS_BEARER_TOKEN_BEDROCK"
 
-DEFAULT_INFERENCE_PROFILE_ARN = (
-    "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
-)
-
 AVAILABLE_MODELS_AP_SOUTHEAST_1 = [
-    DEFAULT_INFERENCE_PROFILE_ARN,
     "global.anthropic.claude-sonnet-4-6",
     "anthropic.claude-3-haiku-20240307-v1:0",
 ]

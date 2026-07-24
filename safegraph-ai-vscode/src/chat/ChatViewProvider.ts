@@ -608,10 +608,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.currentTargetRoot = targetRoot;
           this.output.appendLine(`[safegraph-ai] target root: ${targetRoot?.fsPath || "(none)"}`);
           const region = String(cfg.get("region") || "ap-southeast-1");
-          const modelId = String(
-            cfg.get("modelId") ||
-              "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
-          );
+          const modelId = String(cfg.get("modelId") || "");
           const taggedFilesForRequest = msg.taggedFiles || [];
           const maskedQuestion = maskSensitive(msg.text);
           const requestType = inferRequestType(maskedQuestion);
@@ -828,7 +825,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     this.output.appendLine(`[safegraph-ai] ConverseStream failed, falling back to Converse: ${String(error)}`);
                     return bedrockConverse(nextMessages, responseOptions);
                   });
-              let rawContent = r.raw?.output?.message?.content || [];
+              let rawContent = (r.raw as any)?.output?.message?.content || [];
               let stopReason = String(r.stopReason || "");
               combined = (combined + (combined ? "\n" : "") + r.text).trim();
               chunkLoops += 1;
@@ -2598,10 +2595,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const cfg = vscode.workspace.getConfiguration("safegraph");
     return {
       region: String(cfg.get("region") || "ap-southeast-1"),
-      modelId: String(
-        cfg.get("modelId") ||
-          "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623"
-      )
+      modelId: String(cfg.get("modelId") || "")
     };
   }
 

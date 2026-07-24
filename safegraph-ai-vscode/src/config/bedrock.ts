@@ -3,13 +3,9 @@ import { loadBedrockApiKeyFromDotEnv } from "./env";
 
 /**
  * Default chat/agent model.
- *
- * The project ships with an application inference profile that resolves to
- * Claude Haiku 4.5 (see https://docs.aws.amazon.com/bedrock/.../claude-haiku-4-5).
- * Keep this as the default so existing users keep their provisioned profile.
+ * This must be configured by the user via settings.
  */
-export const DEFAULT_MODEL_ID =
-  "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623";
+export const DEFAULT_MODEL_ID = "";
 
 /**
  * Canonical Claude Haiku 4.5 model id on Amazon Bedrock. Used as a safe fallback

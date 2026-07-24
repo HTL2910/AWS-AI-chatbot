@@ -102,6 +102,21 @@
           "default": "safe",
           "description": "Auto-run commands in VS Code Terminal. 'safe' runs allowlisted commands automatically and asks for the rest."
         },
+        "safegraph.authMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "aws-credentials",
+            "bearer-token"
+          ],
+          "default": "auto",
+          "description": "Authentication method for Amazon Bedrock. Auto uses a configured bearer token first, then the AWS credential chain."
+        },
+        "safegraph.awsProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Optional AWS shared configuration profile. Leave empty to use the default AWS credential chain."
+        },
         "safegraph.region": {
           "type": "string",
           "default": "ap-southeast-1",
@@ -109,7 +124,7 @@
         },
         "safegraph.modelId": {
           "type": "string",
-          "default": "arn:aws:bedrock:ap-southeast-1:510900713068:application-inference-profile/jxsjbl4xo623",
+          "default": "",
           "description": "Bedrock model identifier or inference profile ARN."
         },
         "safegraph.repositoryRag.enabled": {
