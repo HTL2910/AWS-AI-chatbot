@@ -2,8 +2,20 @@
 
 ## [0.19.0] - 2026-07-24
 
+### Added
+- **AWS Authentication Modes**: Added explicit AWS credential-chain and Bedrock bearer-token authentication with optional shared-profile support.
+- **Release Automation**: Added root release set/check commands that synchronize and validate package metadata, lockfile, documentation, changelog, and VSIX references.
+- **Extension CI**: Added GitHub Actions verification for type checking, tests, builds, VSIX packaging, and version consistency.
+- **Release Notes**: Added detailed v0.19.0 installation, verification, and change documentation.
+
 ### Changed
-- Prepare release 0.19.0.
+- **Bedrock Reliability**: Improved retry classification and abortable exponential backoff for transient Bedrock failures.
+- **Dynamic Request Version**: Bedrock request identification now uses the extension package version dynamically.
+- **Documentation**: Expanded authentication setup, safe environment examples, and Bedrock troubleshooting guidance.
+
+### Fixed
+- Prevented retries for fatal validation, authorization, expired-token, abort, and other non-transient client errors.
+- Corrected SDK transport and retry integration uncovered by release verification.
 
 ## [0.18.3] - 2026-07-24
 
