@@ -845,9 +845,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 if (toolUses.length > 0) {
                   messages.push({ role: "assistant", content: rawContent });
                   const toolStatusId = `${msg.id}_tools_${step}`;
-                  const toolStatuses = toolUses.map((tu: any) => ({
+                  const toolStatuses: { name: string; status: "queued" | "running" | "success" | "error"; detail?: string }[] = toolUses.map((tu: any) => ({
                     name: String(tu.toolUse?.name || "tool"),
-                    status: "queued" as const
+                    status: "queued"
                   }));
                   const postToolStatus = (done = false) => {
                     webviewView.webview.postMessage({
