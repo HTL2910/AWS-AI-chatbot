@@ -187,8 +187,10 @@
     "typecheck": "cd safegraph-ai-vscode && npm run typecheck",
     "test": "cd safegraph-ai-vscode && npm run test:ci",
     "build": "cd safegraph-ai-vscode && npm run build",
-    "bump": "node scripts/bump-version.js",
-    "package": "cd safegraph-ai-vscode && npm run package"
+    "package": "cd safegraph-ai-vscode && npm run package",
+    "release:check": "node scripts/release.js --check",
+    "release:set": "node scripts/release.js",
+    "verify:extension": "npm --prefix safegraph-ai-vscode run verify"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

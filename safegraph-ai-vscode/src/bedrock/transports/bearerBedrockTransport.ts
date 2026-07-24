@@ -23,7 +23,11 @@ import {
   buildConverseResponseFromBlocks,
 } from "../bedrockErrors";
 
-const USER_AGENT = "safegraph-ai-vscode/0.19.0";
+function getUserAgent(version?: string): string {
+  const ver = version?.trim() || "0.19.0";
+  return `safegraph-ai-vscode/${ver}`;
+}
+
 const TIMEOUT_MS = 60_000;
 
 // ── Private helpers ──────────────────────────────────────────────────────────
@@ -135,6 +139,7 @@ function makeRequestOptions(
   path: string,
   apiKey: string,
   payloadLength: number,
+  extensionVersion?: string,
 ): https.RequestOptions {
   return {
     method,
@@ -144,7 +149,7 @@ function makeRequestOptions(
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
       "Content-Length": payloadLength,
-      "User-Agent": USER_AGENT,
+      "User-Agent": getUserAgent(extensionVersion),
     },
     timeout: TIMEOUT_MS,
   };
@@ -163,7 +168,10 @@ function attachAbort(req: ClientRequest, signal?: AbortSignal): void {
 // ── Transport implementation ─────────────────────────────────────────────────
 
 export class BearerBedrockTransport implements BedrockTransport {
-  constructor(private readonly apiKey: string) {}
+  constructor(
+    private readonly apiKey: string,
+    private readonly extensionVersion?: string,
+  ) {}
 
   // ── Non-streaming ──────────────────────────────────────────────────────────
 
@@ -179,6 +187,7 @@ export class BearerBedrockTransport implements BedrockTransport {
       "converse",
       this.apiKey,
       Buffer.byteLength(payload),
+      this.extensionVersion,
     );
 
     const raw = await new Promise<string>((resolve, reject) => {
@@ -237,6 +246,7 @@ export class BearerBedrockTransport implements BedrockTransport {
       "converse-stream",
       this.apiKey,
       Buffer.byteLength(payload),
+      this.extensionVersion,
     );
 
     // We wrap the callback-based https stream in an async generator using

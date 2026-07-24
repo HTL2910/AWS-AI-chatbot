@@ -11,13 +11,13 @@
  *   2. Normalises input into BedrockConverseRequest.
  *   3. Resolves the correct transport via authResolver (no heuristics).
  *   4. Wraps stream events into the legacy callback shape (onText).
- *   5. Runs the retry loop via retryPolicy.withRetry.
+ *   5. Runs the retry loop via retryPolicy.withBedrockRetry.
  */
 
 import type { BedrockConverseRequest, BedrockMessage, BedrockStreamEvent } from "./bedrockTypes";
 import { resolveBedrockTransport } from "./authResolver";
 import type { BedrockAuthMode } from "./authResolver";
-import { withRetry } from "./retryPolicy";
+import { withBedrockRetry } from "./retryPolicy";
 import { isExpiredBearerTokenError, BedrockConfigurationError } from "./bedrockErrors";
 
 // ── Re-exported types (keeps legacy import paths working) ────────────────────
@@ -31,6 +31,8 @@ export type BedrockConverseOptions = {
   authMode?: BedrockAuthMode;
   /** Named AWS profile (used when authMode is "aws-credentials" or "auto" without token). */
   awsProfile?: string;
+  /** Extension version for User-Agent header e.g. "0.19.0" */
+  extensionVersion?: string;
   system?: string;
   maxTokens?: number;
   temperature?: number;
@@ -127,12 +129,13 @@ export async function bedrockConverse(
     bearerToken: options.apiKey,
     awsProfile: options.awsProfile,
     region: options.region,
+    extensionVersion: options.extensionVersion,
   });
   const maxRetries = options.retries ?? 2;
 
-  return withRetry(
+  return withBedrockRetry(
     () => transport.converse(request, options.signal),
-    maxRetries,
+    { maxRetries, signal: options.signal },
   );
 }
 
@@ -149,10 +152,11 @@ export async function bedrockConverseStream(
     bearerToken: options.apiKey,
     awsProfile: options.awsProfile,
     region: options.region,
+    extensionVersion: options.extensionVersion,
   });
   const maxRetries = options.retries ?? 2;
 
-  return withRetry(async () => {
+  return withBedrockRetry(async () => {
     let fullText = "";
     let stopReason = "";
     let callbackChain = Promise.resolve();
@@ -231,7 +235,7 @@ export async function bedrockConverseStream(
       stopReason,
       raw: { output: { message: { content } }, stopReason },
     };
-  }, maxRetries);
+  }, { maxRetries, signal: options.signal });
 }
 
 export async function bedrockConverseText(

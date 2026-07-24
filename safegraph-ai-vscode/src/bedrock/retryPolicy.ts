@@ -1,89 +1,173 @@
 /**
- * Retry policy for Bedrock calls.
+ * retryPolicy.ts
  *
- * Separating this from the transport lets us test the policy independently
- * and avoids duplicating the same logic in both transport classes.
+ * Implements retry rules and exponential backoff with full jitter for Bedrock calls.
  */
 
-import { isUnusableCompletedStreamError, EmptyStreamError } from "./bedrockErrors";
+import { EmptyStreamError } from "./bedrockErrors";
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+export interface RetryOptions {
+  maxRetries: number;
+  signal?: AbortSignal;
 }
 
-function errorName(error: unknown): string {
-  return error instanceof Error ? error.name : "";
-}
+const NON_RETRYABLE_NAMES = new Set([
+  "ValidationException",
+  "AccessDeniedException",
+  "ResourceNotFoundException",
+  "ExpiredTokenException",
+  "UnrecognizedClientException",
+  "InvalidSignatureException",
+  "AbortError",
+  "BedrockConfigurationError",
+  "EmptyStreamError",
+]);
 
-/**
- * Returns true when the call should be retried.
- *
- * Rules:
- *  - Never retry client errors (4xx except 429).
- *  - Never retry empty-stream: the model returned nothing on purpose.
- *  - Always retry throttling (429), server errors (5xx), and network issues.
- */
-export function shouldRetry(error: unknown): boolean {
+const RETRYABLE_NAMES = new Set([
+  "ThrottlingException",
+  "TooManyRequestsException",
+  "ServiceUnavailableException",
+  "InternalServerException",
+  "ModelNotReadyException",
+]);
+
+export function isAbortError(error: unknown): boolean {
   if (!error) return false;
+  if (error instanceof Error) {
+    if (error.name === "AbortError" || error.message.toLowerCase().includes("aborted")) {
+      return true;
+    }
+  }
+  const err = error as { name?: string; message?: string };
+  return err.name === "AbortError" || String(err.message || "").toLowerCase().includes("aborted");
+}
 
-  if (error instanceof EmptyStreamError) return false;
-  if (isUnusableCompletedStreamError(error)) return false;
+export function getErrorName(error: unknown): string {
+  if (!error) return "";
+  const err = error as { name?: string; code?: string };
+  return err.name || err.code || "";
+}
 
-  const msg = errorMessage(error);
-  const name = errorName(error);
+export function getHttpStatus(error: unknown): number | undefined {
+  if (!error) return undefined;
+  const err = error as { statusCode?: number; status?: number; $metadata?: { httpStatusCode?: number }; message?: string };
 
-  // Hard client errors — never retry
-  if (/Bedrock (400|401|403|404)/.test(msg)) return false;
-  if (
-    /ValidationException|AccessDeniedException|ResourceNotFoundException|InvalidSignatureException/i.test(msg) ||
-    /ValidationException|AccessDeniedException|ResourceNotFoundException|InvalidSignatureException/i.test(name)
-  ) {
+  if (typeof err.statusCode === "number") return err.statusCode;
+  if (typeof err.status === "number") return err.status;
+  if (typeof err.$metadata?.httpStatusCode === "number") return err.$metadata.httpStatusCode;
+
+  // Check message for HTTP status codes e.g. "Bedrock 429" or "HTTP 503"
+  const match = String(err.message || "").match(/(?:Bedrock|HTTP|status)\s+([45]\d\d)/i);
+  if (match) {
+    return parseInt(match[1], 10);
+  }
+  return undefined;
+}
+
+export function isTransientNetworkError(error: unknown): boolean {
+  if (!error) return false;
+  const str = String(error instanceof Error ? error.message : error);
+  const code = (error as { code?: string }).code || "";
+  return (
+    /ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up/i.test(str) ||
+    /ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/i.test(code)
+  );
+}
+
+export function isRetryableBedrockError(error: unknown): boolean {
+  if (isAbortError(error)) {
     return false;
   }
 
-  // Transient errors — always retry
-  if (/Bedrock (429|500|502|503|504)/.test(msg)) return true;
-  if (
-    /ThrottlingException|InternalServerException|ServiceUnavailableException/i.test(msg) ||
-    /ThrottlingException|InternalServerException|ServiceUnavailableException/i.test(name)
-  ) {
+  if (error instanceof EmptyStreamError) {
+    return false;
+  }
+
+  const name = getErrorName(error);
+
+  if (NON_RETRYABLE_NAMES.has(name)) {
+    return false;
+  }
+
+  if (RETRYABLE_NAMES.has(name)) {
     return true;
   }
 
-  // Network errors
-  if (/timeout|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(msg)) return true;
+  const status = getHttpStatus(error);
 
-  return false;
-}
+  if (status === 429) {
+    return true;
+  }
 
-/** Exponential backoff. Caps at 8 seconds. */
-export function retryDelayMs(attempt: number): number {
-  return Math.min(1000 * Math.pow(2, attempt), 8000);
-}
+  if (status !== undefined) {
+    return status >= 500 && status <= 599;
+  }
 
-export async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return isTransientNetworkError(error);
 }
 
 /**
- * Wraps an async factory in a retry loop.
- * The factory is called with the zero-based attempt index.
+ * Exponential backoff with full jitter.
  */
-export async function withRetry<T>(
-  factory: (attempt: number) => Promise<T>,
-  maxRetries = 2,
+export function calculateRetryDelay(
+  attempt: number,
+  baseDelayMs = 500,
+  maximumDelayMs = 8_000,
+): number {
+  const ceiling = Math.min(maximumDelayMs, baseDelayMs * 2 ** attempt);
+  return Math.floor(Math.random() * ceiling);
+}
+
+/**
+ * Abortable sleep.
+ */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      return reject(new Error("aborted"));
+    }
+
+    let timer: NodeJS.Timeout | undefined;
+
+    const onAbort = () => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(new Error("aborted"));
+    };
+
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    timer = setTimeout(() => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+  });
+}
+
+/**
+ * Retry wrapper.
+ */
+export async function withBedrockRetry<T>(
+  operation: () => Promise<T>,
+  options: RetryOptions,
 ): Promise<T> {
-  let lastError: Error = new Error("Unknown error");
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= options.maxRetries; attempt += 1) {
     try {
-      return await factory(attempt);
-    } catch (err) {
-      lastError = err as Error;
-      if (!shouldRetry(err) || attempt >= maxRetries) {
-        break;
+      return await operation();
+    } catch (error) {
+      lastError = error;
+
+      if (attempt >= options.maxRetries || !isRetryableBedrockError(error)) {
+        throw error;
       }
-      await sleep(retryDelayMs(attempt));
+
+      await sleep(calculateRetryDelay(attempt), options.signal);
     }
   }
+
   throw lastError;
 }

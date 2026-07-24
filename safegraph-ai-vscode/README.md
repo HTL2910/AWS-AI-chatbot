@@ -2,7 +2,7 @@
 
 Safegraph AI is a multi-agent AI development platform built for Bedrock-backed autonomous development workflows. It combines sidebar chat, repository context, live diff application, terminal verification, task memory, artifact verification, and project-wide refactoring inside the editor.
 
-Current release: `v0.18.3`
+Current release: `v0.19.0`
 
 ## What It Does
 
@@ -24,7 +24,7 @@ Current release: `v0.18.3`
 - **Evidence Reports**: Produces an evidence report when a task completes, including changed files, commands run, verification status, and remaining risk
 - **Status Bar Integration**: Shows the current Safegraph task state in the VS Code status bar for quick visibility
 
-## New in v0.18.3
+## New in v0.19.0
 
 ### Multi-Agent System
 - **Agent Manager**: Orchestrate multiple specialized agents working in parallel
@@ -57,7 +57,7 @@ Current release: `v0.18.3`
 
 ## Current AI Capabilities
 
-Safegraph AI v0.18.3 is a full-featured autonomous AI development platform:
+Safegraph AI v0.19.0 is a full-featured autonomous AI development platform:
 
 - **Multi-Agent Coordination**: Specialized agents work together on complex tasks *(Planned)*
 - **Artifact-First Verification**: Tangible deliverables for trust and validation *(Scaffold only)*
@@ -73,7 +73,7 @@ Safegraph AI v0.18.3 is a full-featured autonomous AI development platform:
 
 ## What Is Better Now
 
-Compared with a basic AI chat extension, Safegraph AI v0.18.3 is stronger in these areas:
+Compared with a basic AI chat extension, Safegraph AI v0.19.0 is stronger in these areas:
 
 - **Multi-Agent Collaboration**: Multiple specialized agents work together on complex tasks *(Planned)*
 - **Artifact-Based Trust**: Tangible deliverables (plans, reports, reviews) for verification *(Scaffold only)*
@@ -142,7 +142,7 @@ What Safegraph learns from Bedrock-Coder:
 Install the packaged VSIX:
 
 ```sh
-code --install-extension safegraph-ai-0.18.3.vsix --force
+code --install-extension safegraph-ai-0.19.0.vsix --force
 ```
 
 Verify installation:
@@ -154,22 +154,49 @@ code --list-extensions --show-versions | grep safegraph
 Expected:
 
 ```text
-safegraph.safegraph-ai@0.18.3
+safegraph.safegraph-ai@0.19.0
 ```
+
+## Authentication
+
+SafeGraph AI supports two Amazon Bedrock authentication methods.
+
+### AWS credentials — recommended for enterprise use
+
+Supported through the AWS SDK credential chain:
+
+- environment credentials
+- shared AWS profiles
+- IAM Identity Center / SSO
+- temporary STS credentials
+- ECS task roles
+- EC2 instance roles
+
+Set:
+
+- `safegraph.authMode`: `aws-credentials`
+- `safegraph.awsProfile`: optional
+
+### Bedrock API key
+
+For simpler local onboarding:
+
+1. Run `Safegraph AI: Set Bedrock API Key`.
+2. Set `safegraph.authMode` to `bearer-token` or `auto`.
+
+Do not commit real `.env` files, API keys, account IDs, or ARNs.
+
+## Troubleshooting
+
+- **Missing model ID.** Set `safegraph.modelId` to a Bedrock model ID or inference-profile ARN.
+- **No AWS credentials found.** Configure a supported AWS SDK credential source, or select `bearer-token` and store a Bedrock API key.
+- **Expired SSO session.** Sign in again with the AWS CLI for the profile selected by `safegraph.awsProfile`.
+- **Access denied.** Confirm the active IAM principal can invoke the configured Bedrock model or inference profile.
+- **Model not available in configured region.** Set `safegraph.region` to a region where the model is enabled and available.
+- **Invalid inference-profile ARN.** Check the ARN format, region, and profile identifier; do not paste real ARNs into committed files.
+- **Bearer token missing.** Run `Safegraph AI: Set Bedrock API Key`, then use `bearer-token` or `auto`.
 
 ## Configuration
-
-Set the Bedrock API key from the command palette:
-
-```text
-Safegraph AI: Set Bedrock API Key
-```
-
-Or provide a workspace `.env` key:
-
-```text
-AWS_BEARER_TOKEN_BEDROCK=...
-```
 
 Important settings:
 
@@ -222,7 +249,7 @@ Launch an Extension Development Host:
 1. Open `safegraph-ai-vscode` in VS Code.
 2. Press `F5`.
 
-## v0.18.3 Highlights
+## v0.19.0 Highlights
 
 - Multi-agent orchestration system with specialized agent types *(Planned)*
 - Artifact generation and verification for trust and validation *(Scaffold only)*

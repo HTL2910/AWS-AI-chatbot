@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.19.0] - 2026-07-24
+
+### Changed
+- Prepare release 0.19.0.
+
 ## [0.18.3] - 2026-07-24
 
 ### Changed
@@ -8,6 +13,8 @@
 - **AWS Credentials**: Refactored `bedrockClient.ts` to use `@aws-sdk/client-bedrock-runtime` and standard AWS credential chains, falling back to legacy Bearer token usage if an API key is provided.
 - **Retry Logic**: Refined retry logic in `bedrockConverse` to avoid retry loops on fatal client errors (e.g., 400-404, ValidationException), while maintaining retries for throttling and server-side errors.
 - **Default Config**: Removed hardcoded Safegraph AWS ARN and defaulted `safegraph.modelId` to an empty string.
+- **Release Automation**: Consolidated version updates into root `scripts/release.js`, added consistency checks, and added extension verification scripts.
+- **Authentication Docs**: Documented AWS credential-chain and Bedrock API-key authentication, safe environment examples, and common Bedrock troubleshooting cases.
 
 ### Fixed
 - Prevented extension from crashing due to `constư` typo in `src/extension.ts`.

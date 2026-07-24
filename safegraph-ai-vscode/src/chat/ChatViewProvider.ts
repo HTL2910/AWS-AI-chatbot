@@ -761,6 +761,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 region,
                 modelId,
                 apiKey,
+                extensionVersion: this.context?.extension?.packageJSON?.version,
                 system: systemPrompt,
                 signal: this.currentAbort?.signal,
                 maxTokens: chatCfg.maxTokens,
@@ -2585,7 +2586,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         {
           method: "GET",
           headers: {
-            "User-Agent": "safegraph-ai-vscode/0.12.1",
+            "User-Agent": `safegraph-ai-vscode/${this.context?.extension?.packageJSON?.version || "0.19.0"}`,
             Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5"
           },
           timeout: 20_000

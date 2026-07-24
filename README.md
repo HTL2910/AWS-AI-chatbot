@@ -4,7 +4,7 @@
 
 SafeGraph AI turns VS Code into a local-first AI coding workspace for developers who want more than a chatbot. It is designed for multi-step engineering work: understand the repo, plan the task, edit files, run safe checks, fix failures, and summarize what actually changed.
 
-Current extension version: `0.18.3`
+Current extension version: `0.19.0`
 
 Model: tuned for **Claude Haiku 4.5** on Amazon Bedrock (fast, low-cost, near-frontier coding).
 
@@ -182,7 +182,7 @@ SafeGraph AI records commands and verification results. A completed task include
 Install the latest VSIX:
 
 ```bash
-code --install-extension safegraph-ai-0.18.3.vsix --force
+code --install-extension safegraph-ai-0.19.0.vsix --force
 ```
 
 Verify:
@@ -194,25 +194,47 @@ code --list-extensions --show-versions | grep safegraph
 Expected:
 
 ```text
-safegraph.safegraph-ai@0.18.3
+safegraph.safegraph-ai@0.19.0
 ```
 
-## Configure Bedrock
+## Authentication
 
-Set the Bedrock API key from VS Code:
+SafeGraph AI supports two Amazon Bedrock authentication methods.
 
-```text
-Safegraph AI: Set Bedrock API Key
-```
+### AWS credentials — recommended for enterprise use
 
-Or provide a local `.env`:
+Supported through the AWS SDK credential chain:
 
-```env
-AWS_BEARER_TOKEN_BEDROCK="bedrock-api-key-..."
-ARN="arn:aws:bedrock:ap-southeast-1:ACCOUNT_ID:application-inference-profile/PROFILE_ID"
-```
+- environment credentials
+- shared AWS profiles
+- IAM Identity Center / SSO
+- temporary STS credentials
+- ECS task roles
+- EC2 instance roles
 
-Do not commit real `.env` files or real API keys.
+Set:
+
+- `safegraph.authMode`: `aws-credentials`
+- `safegraph.awsProfile`: optional
+
+### Bedrock API key
+
+For simpler local onboarding:
+
+1. Run `Safegraph AI: Set Bedrock API Key`.
+2. Set `safegraph.authMode` to `bearer-token` or `auto`.
+
+Do not commit real `.env` files, API keys, account IDs, or ARNs.
+
+## Troubleshooting
+
+- **Missing model ID.** Set `safegraph.modelId` to a Bedrock model ID or inference-profile ARN.
+- **No AWS credentials found.** Configure a supported AWS SDK credential source, or select `bearer-token` and store a Bedrock API key.
+- **Expired SSO session.** Sign in again with the AWS CLI for the profile selected by `safegraph.awsProfile`.
+- **Access denied.** Confirm the active IAM principal can invoke the configured Bedrock model or inference profile.
+- **Model not available in configured region.** Set `safegraph.region` to a region where the model is enabled and available.
+- **Invalid inference-profile ARN.** Check the ARN format, region, and profile identifier; do not paste real ARNs into committed files.
+- **Bearer token missing.** Run `Safegraph AI: Set Bedrock API Key`, then use `bearer-token` or `auto`.
 
 ## Important Settings
 

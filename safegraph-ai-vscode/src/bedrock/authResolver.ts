@@ -22,6 +22,7 @@ export interface BedrockAuthOptions {
   bearerToken?: string;
   awsProfile?: string;
   region: string;
+  extensionVersion?: string;
 }
 
 /** TypeScript exhaustiveness helper. */
@@ -42,7 +43,7 @@ export function resolveBedrockTransport(options: BedrockAuthOptions): BedrockTra
           "Add AWS_BEARER_TOKEN_BEDROCK to your workspace .env file, or click 'Set Key' in the chat panel.",
         );
       }
-      return new BearerBedrockTransport(options.bearerToken.trim());
+      return new BearerBedrockTransport(options.bearerToken.trim(), options.extensionVersion);
 
     case "aws-credentials":
       return new SdkBedrockTransport({
@@ -52,7 +53,7 @@ export function resolveBedrockTransport(options: BedrockAuthOptions): BedrockTra
 
     case "auto":
       return options.bearerToken?.trim()
-        ? new BearerBedrockTransport(options.bearerToken.trim())
+        ? new BearerBedrockTransport(options.bearerToken.trim(), options.extensionVersion)
         : new SdkBedrockTransport({
             region: options.region,
             profile: options.awsProfile?.trim() || undefined,

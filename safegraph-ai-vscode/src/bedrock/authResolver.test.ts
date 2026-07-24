@@ -33,6 +33,16 @@ describe("authResolver & config validation", () => {
       expect(transport).toBeInstanceOf(SdkBedrockTransport);
     });
 
+    it("selects SdkBedrockTransport when authMode is aws-credentials even if bearerToken exists", () => {
+      const transport = resolveBedrockTransport({
+        authMode: "aws-credentials",
+        bearerToken: "should-be-ignored-token",
+        awsProfile: "dev-profile",
+        region: "ap-southeast-1",
+      });
+      expect(transport).toBeInstanceOf(SdkBedrockTransport);
+    });
+
     it("in auto mode, picks BearerBedrockTransport if token is present", () => {
       const transport = resolveBedrockTransport({
         authMode: "auto",
