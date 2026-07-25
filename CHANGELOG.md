@@ -11,11 +11,12 @@
 ### Changed
 - **Bedrock Reliability**: Improved retry classification and abortable exponential backoff for transient Bedrock failures.
 - **Dynamic Request Version**: Bedrock request identification now uses the extension package version dynamically.
-- **Documentation**: Expanded authentication setup, safe environment examples, and Bedrock troubleshooting guidance.
+- **Documentation**: Added end-to-end Amazon Bedrock console onboarding, model selection, API-key and AWS SSO setup, safe environment examples, and troubleshooting guidance.
 
 ### Fixed
 - Prevented retries for fatal validation, authorization, expired-token, abort, and other non-transient client errors.
 - Corrected SDK transport and retry integration uncovered by release verification.
+- Made the missing-model error actionable by including the recommended Claude Haiku 4.5 model ID.
 
 ## [0.18.3] - 2026-07-24
 

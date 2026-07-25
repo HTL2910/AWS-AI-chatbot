@@ -197,6 +197,76 @@ Expected:
 safegraph.safegraph-ai@0.19.0
 ```
 
+## First-Time Amazon Bedrock Setup
+
+SafeGraph AI needs both a Bedrock model and an authentication method. Complete these steps before sending your first message.
+
+### 1. Open Bedrock and select a Region
+
+1. Sign in to the [Amazon Bedrock console](https://console.aws.amazon.com/bedrock).
+2. Select a Region where the model is available, for example `ap-southeast-1`.
+3. Open **Model catalog**, select an Anthropic Claude model, and try opening it in a playground.
+4. If AWS asks for Anthropic use-case details, submit the form once for the account.
+
+In commercial AWS Regions, model access is enabled automatically when the account has the required AWS Marketplace permissions. The first third-party model subscription can take up to 15 minutes. If it fails with `AccessDeniedException`, ask an AWS administrator to enable the model or grant the required Bedrock and Marketplace permissions.
+
+### 2. Choose an authentication method
+
+#### Option A — Bedrock API key for local setup
+
+1. In the Bedrock console, open **API keys**.
+2. Choose **Generate short-term API keys** for testing, or **Generate long-term API keys** for longer local use.
+3. Copy the generated key immediately.
+4. In VS Code, run `Safegraph AI: Set Bedrock API Key`.
+5. Paste the key and set `safegraph.authMode` to `bearer-token` or `auto`.
+
+Short-term keys expire with the AWS console session, never last longer than 12 hours, and only work in the Region where they were generated.
+
+#### Option B — AWS credentials for enterprise use
+
+If your organization uses IAM Identity Center / SSO:
+
+```bash
+aws configure sso
+aws sso login --profile my-company-profile
+aws sts get-caller-identity --profile my-company-profile
+```
+
+Then set `safegraph.authMode` to `aws-credentials` and `safegraph.awsProfile` to `my-company-profile`. Leave `safegraph.awsProfile` empty when using the default AWS SDK credential chain.
+
+### 3. Configure SafeGraph AI
+
+1. Open the VS Code Command Palette with `Cmd/Ctrl + Shift + P`.
+2. Run `Preferences: Open User Settings (JSON)`.
+3. Add one of the following configurations.
+
+For a Bedrock API key:
+
+```json
+{
+  "safegraph.authMode": "bearer-token",
+  "safegraph.region": "ap-southeast-1",
+  "safegraph.modelId": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+}
+```
+
+For an AWS SSO profile:
+
+```json
+{
+  "safegraph.authMode": "aws-credentials",
+  "safegraph.awsProfile": "my-company-profile",
+  "safegraph.region": "ap-southeast-1",
+  "safegraph.modelId": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+}
+```
+
+The examples use the global Claude Haiku 4.5 model ID. If your organization provides an inference profile, replace `safegraph.modelId` with that profile ARN and keep `safegraph.region` aligned with it.
+
+Run `Developer: Reload Window`, open SafeGraph AI, and send a short test message. Never commit API keys, account IDs, or real inference-profile ARNs.
+
+AWS references: [model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html), [Bedrock API keys](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-generate.html), and [AWS CLI SSO](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sso.html).
+
 ## Authentication
 
 SafeGraph AI supports two Amazon Bedrock authentication methods.
@@ -228,7 +298,7 @@ Do not commit real `.env` files, API keys, account IDs, or ARNs.
 
 ## Troubleshooting
 
-- **Missing model ID.** Set `safegraph.modelId` to a Bedrock model ID or inference-profile ARN.
+- **Missing model ID.** Follow **First-Time Amazon Bedrock Setup** above, then reload the VS Code window.
 - **No AWS credentials found.** Configure a supported AWS SDK credential source, or select `bearer-token` and store a Bedrock API key.
 - **Expired SSO session.** Sign in again with the AWS CLI for the profile selected by `safegraph.awsProfile`.
 - **Access denied.** Confirm the active IAM principal can invoke the configured Bedrock model or inference profile.

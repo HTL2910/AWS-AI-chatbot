@@ -33,6 +33,8 @@ SafeGraph AI v0.19.0 improves Amazon Bedrock authentication, retry safety, relea
 
 ### Documentation
 
+- Added end-to-end first-run instructions covering the Bedrock console, model selection, API-key generation, AWS SSO, and VS Code settings.
+- The missing-model error now includes the recommended Claude Haiku 4.5 model ID.
 - Documented AWS credential-chain and Bedrock API-key authentication.
 - Added troubleshooting for missing model IDs, unavailable credentials, expired SSO sessions, access denial, region availability, invalid inference-profile ARNs, and missing bearer tokens.
 - Added safe `.env.example` defaults without real account IDs or ARNs.

@@ -75,9 +75,10 @@ export function validateBedrockConfiguration(options: BedrockClientOptions): voi
   if (!options.modelId.trim()) {
     throw new BedrockConfigurationError(
       "No Bedrock model is configured.\n\n" +
-      "Open Settings and configure:\n" +
-      "  safegraph.modelId\n\n" +
-      "You may use a Bedrock model ID or inference profile ARN.",
+      "Open Settings and set safegraph.modelId.\n\n" +
+      "Recommended Claude Haiku 4.5 model ID:\n" +
+      "global.anthropic.claude-haiku-4-5-20251001-v1:0\n\n" +
+      "You may also use an inference profile ARN supplied by your organization.",
     );
   }
 }
