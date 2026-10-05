@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.20.0] - 2026-10-05
 
 ### Added
 - **Setup screen** (`Safegraph AI: Setup`): enter a Bedrock API key, AWS access keys (with optional session token) or an AWS profile, pick region and model, and test the connection. Opens automatically on first run when no credentials are configured.

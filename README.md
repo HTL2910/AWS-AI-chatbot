@@ -4,7 +4,7 @@
 
 SafeGraph AI turns VS Code into a local-first AI coding workspace for developers who want more than a chatbot. It is designed for multi-step engineering work: understand the repo, plan the task, edit files, run safe checks, fix failures, and summarize what actually changed.
 
-Current extension version: `0.19.0`
+Current extension version: `0.20.0`
 
 Model: tuned for **Claude Haiku 4.5** on Amazon Bedrock (fast, low-cost, near-frontier coding).
 
@@ -179,10 +179,10 @@ SafeGraph AI records commands and verification results. A completed task include
 
 ## Install
 
-Download `safegraph-ai-0.19.0.vsix` from the GitHub Releases page (every `v*` tag publishes one; CI runs also attach it as a build artifact), then install it from the Extensions view (`···` → **Install from VSIX...**) or from a terminal:
+Download `safegraph-ai-0.20.0.vsix` from the GitHub Releases page (every `v*` tag publishes one; CI runs also attach it as a build artifact), then install it from the Extensions view (`···` → **Install from VSIX...**) or from a terminal:
 
 ```bash
-code --install-extension safegraph-ai-0.19.0.vsix --force
+code --install-extension safegraph-ai-0.20.0.vsix --force
 ```
 
 Verify:
@@ -194,7 +194,7 @@ code --list-extensions --show-versions | grep safegraph
 Expected:
 
 ```text
-safegraph.safegraph-ai@0.19.0
+safegraph.safegraph-ai@0.20.0
 ```
 
 ## First-Time Amazon Bedrock Setup
