@@ -2,15 +2,15 @@
 
 A coding agent for VS Code powered by Claude on Amazon Bedrock. Ask it to write code, fix bugs, review changes or produce a project report. It reads your workspace, applies changes as reviewable diffs, runs safe build/test commands and reports what it did.
 
-Current release: `v0.19.0`
+Current release: `v0.20.0`
 
 ## Quick Start
 
-1. **Download** `safegraph-ai-0.19.0.vsix` from the project's GitHub Releases page.
+1. **Download** `safegraph-ai-0.20.0.vsix` from the project's GitHub Releases page.
 2. **Install** it: in VS Code open the Extensions view → `···` menu → **Install from VSIX...**, or run:
 
    ```sh
-   code --install-extension safegraph-ai-0.19.0.vsix --force
+   code --install-extension safegraph-ai-0.20.0.vsix --force
    ```
 
 3. **Connect AWS.** The **Safegraph AI Setup** screen opens automatically the first time (or run `Safegraph AI: Setup` from the Command Palette). Pick one:
