@@ -37,3 +37,10 @@ jobs:
       - name: Verify versions
         working-directory: .
         run: node scripts/release.js --check
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: safegraph-ai-vsix
+          path: safegraph-ai-vscode/*.vsix
+          if-no-files-found: error

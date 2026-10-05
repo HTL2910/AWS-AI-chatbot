@@ -6,7 +6,7 @@
 import * as vscode from 'vscode';
 import { CodeContext } from './ContextAnalyzer';
 import { bedrockConverse } from '../bedrock/bedrockClient';
-import { getCompletionConfig, resolveBedrockApiKey } from '../config/bedrock';
+import { getCompletionConfig, hasBedrockCredentials, resolveBedrockConnection } from '../config/bedrock';
 import {
   buildCompletionPrompt,
   buildCompletionSystemPrompt,
@@ -68,11 +68,14 @@ export class SuggestionEngine {
     token?: vscode.CancellationToken
   ): Promise<Suggestion | null> {
     const cfg = getCompletionConfig();
-    const apiKey = await resolveBedrockApiKey(this.context, this.output);
-    if (!apiKey) {
-      this.output.appendLine('[SuggestionEngine] No Bedrock API key available; skipping completion.');
+    if (!(await hasBedrockCredentials(this.context))) {
+      this.output.appendLine('[SuggestionEngine] No AWS credentials configured; skipping completion.');
       return null;
     }
+    const connection = await resolveBedrockConnection(this.context, this.output, {
+      region: cfg.region,
+      modelId: cfg.modelId
+    });
 
     const abort = new AbortController();
     if (token) {
@@ -92,9 +95,7 @@ export class SuggestionEngine {
       );
 
       const response = await bedrockConverse(prompt, {
-        region: cfg.region,
-        modelId: cfg.modelId,
-        apiKey,
+        ...connection,
         system: buildCompletionSystemPrompt(),
         maxTokens: cfg.maxTokens,
         temperature: 0.1,

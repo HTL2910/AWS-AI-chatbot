@@ -79,19 +79,37 @@ function mapSdkContentBlock(block: any): BedrockContentBlock {
 
 // ── Transport implementation ──────────────────────────────────────────────────
 
+export interface StaticAwsCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+}
+
 export class SdkBedrockTransport implements BedrockTransport {
   private readonly profile: string | undefined;
   private readonly region: string;
+  private readonly credentials: StaticAwsCredentials | undefined;
 
-  constructor({ region, profile }: { region: string; profile?: string }) {
+  constructor({ region, profile, credentials }: { region: string; profile?: string; credentials?: StaticAwsCredentials }) {
     this.region = region;
     this.profile = profile;
+    this.credentials = credentials;
   }
 
   private createClient(): BedrockRuntimeClient {
+    // Explicit access keys win over a named profile; neither means default chain.
+    const credentials = this.credentials
+      ? {
+          accessKeyId: this.credentials.accessKeyId,
+          secretAccessKey: this.credentials.secretAccessKey,
+          ...(this.credentials.sessionToken ? { sessionToken: this.credentials.sessionToken } : {}),
+        }
+      : this.profile
+        ? fromIni({ profile: this.profile })
+        : undefined;
     return new BedrockRuntimeClient({
       region: this.region,
-      credentials: this.profile ? fromIni({ profile: this.profile }) : undefined,
+      credentials,
       maxAttempts: 1, // SafeGraph handles its own retries via retryPolicy.ts
     });
   }

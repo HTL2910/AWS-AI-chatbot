@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { bedrockConverse } from "../bedrock/bedrockClient";
-import { getBedrockModelConfig, resolveBedrockApiKey } from "../config/bedrock";
+import { hasBedrockCredentials, resolveBedrockConnection } from "../config/bedrock";
 import { maskSensitive } from "../security/mask";
 
 function takeBefore(text: string, offset: number, maxChars: number) {
@@ -65,13 +65,13 @@ export async function runInlineEdit(context: vscode.ExtensionContext, output: vs
   });
   if (!instruction?.trim()) return;
 
-  const apiKey = await resolveBedrockApiKey(context, output);
-  if (!apiKey) {
-    vscode.window.showErrorMessage("Safegraph AI: Missing Bedrock API key.");
+  if (!(await hasBedrockCredentials(context))) {
+    const action = await vscode.window.showErrorMessage("Safegraph AI: AWS credentials are not configured.", "Open Setup");
+    if (action === "Open Setup") await vscode.commands.executeCommand("safegraph.setup");
     return;
   }
 
-  const { region, modelId } = getBedrockModelConfig();
+  const connection = await resolveBedrockConnection(context, output);
 
   const doc = editor.document;
   const selection = editor.selection;
@@ -117,9 +117,7 @@ Replacement code only:`;
     },
     async () => {
       const result = await bedrockConverse(prompt, {
-        region,
-        modelId,
-        apiKey,
+        ...connection,
         system: [
           "You are Safegraph AI Inline Edit inside VS Code.",
           "Return only replacement code for the selected range or cursor insertion.",

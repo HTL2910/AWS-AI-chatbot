@@ -4,6 +4,8 @@ import { runInlineEdit, acceptInlineEdit, rejectInlineEdit } from "./inline/inli
 import { HistoryManager } from "./history/HistoryManager";
 import { HistoryViewer } from "./history/HistoryViewer";
 import { InlineCompletionProvider } from "./completion/InlineCompletionProvider";
+import { SetupPanel } from "./setup/SetupPanel";
+import { hasBedrockCredentials } from "./config/bedrock";
 
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel("Safegraph AI");
@@ -57,22 +59,20 @@ export function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(openChatCommand);
 
-    const setBedrockApiKeyCommand = vscode.commands.registerCommand(
-      "safegraph.setBedrockApiKey",
-      async () => {
-        const key = await vscode.window.showInputBox({
-          title: "Safegraph AI",
-          prompt: "Enter AWS Bedrock API key (bedrock-api-key-... or ABSK...)",
-          password: true,
-          ignoreFocusOut: true
-        });
-        if (!key) return;
-        await context.secrets.store("safegraph.bedrockApiKey", key.trim());
-        output.appendLine("[safegraph-ai] Bedrock API key stored in SecretStorage");
-        vscode.window.showInformationMessage("Safegraph AI: API key saved.");
-      }
+    const openSetup = () => SetupPanel.show(context, output);
+    context.subscriptions.push(
+      vscode.commands.registerCommand("safegraph.setup", openSetup),
+      // Kept for existing keybindings/scripts; now opens the full setup screen.
+      vscode.commands.registerCommand("safegraph.setBedrockApiKey", openSetup)
     );
-    context.subscriptions.push(setBedrockApiKeyCommand);
+
+    // First run: walk the user through credentials before the first request fails.
+    void hasBedrockCredentials(context).then((configured) => {
+      if (!configured) {
+        output.appendLine("[safegraph-ai] no AWS credentials configured; opening setup");
+        openSetup();
+      }
+    }).catch((error) => output.appendLine(`[safegraph-ai] credential check failed: ${String(error)}`));
 
     const checkBedrockApiKeyCommand = vscode.commands.registerCommand(
       "safegraph.checkBedrockApiKey",
@@ -160,7 +160,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     output.appendLine(`[safegraph-ai] registered webview provider: ${ChatViewProvider.viewType}`);
     output.appendLine("[safegraph-ai] registered command: safegraph.openChat");
-    output.appendLine("[safegraph-ai] registered command: safegraph.setBedrockApiKey");
+    output.appendLine("[safegraph-ai] registered command: safegraph.setup");
     output.appendLine("[safegraph-ai] registered command: safegraph.checkBedrockApiKey");
     output.appendLine("[safegraph-ai] registered command: safegraph.openLog");
     output.appendLine("[safegraph-ai] registered command: safegraph.moveChatRight");

@@ -179,7 +179,7 @@ SafeGraph AI records commands and verification results. A completed task include
 
 ## Install
 
-Install the latest VSIX:
+Download `safegraph-ai-0.19.0.vsix` from the GitHub Releases page (every `v*` tag publishes one; CI runs also attach it as a build artifact), then install it from the Extensions view (`···` → **Install from VSIX...**) or from a terminal:
 
 ```bash
 code --install-extension safegraph-ai-0.19.0.vsix --force
@@ -217,8 +217,7 @@ In commercial AWS Regions, model access is enabled automatically when the accoun
 1. In the Bedrock console, open **API keys**.
 2. Choose **Generate short-term API keys** for testing, or **Generate long-term API keys** for longer local use.
 3. Copy the generated key immediately.
-4. In VS Code, run `Safegraph AI: Set Bedrock API Key`.
-5. Paste the key and set `safegraph.authMode` to `bearer-token` or `auto`.
+4. In the **Safegraph AI Setup** screen choose **Bedrock API key** and paste it.
 
 Short-term keys expire with the AWS console session, never last longer than 12 hours, and only work in the Region where they were generated.
 
@@ -236,34 +235,14 @@ Then set `safegraph.authMode` to `aws-credentials` and `safegraph.awsProfile` to
 
 ### 3. Configure SafeGraph AI
 
-1. Open the VS Code Command Palette with `Cmd/Ctrl + Shift + P`.
-2. Run `Preferences: Open User Settings (JSON)`.
-3. Add one of the following configurations.
+The **Safegraph AI Setup** screen opens automatically after installation (or run `Safegraph AI: Setup` from the Command Palette):
 
-For a Bedrock API key:
+1. Choose the authentication method: **Bedrock API key**, **AWS access key** (Access Key ID + Secret Access Key, optional session token), or **AWS profile / default credential chain**.
+2. Enter the credentials. They are stored in VS Code SecretStorage on this machine only.
+3. Choose the region and model. Claude Haiku 4.5 (`global.anthropic.claude-haiku-4-5-20251001-v1:0`) is pre-filled; an inference profile ARN from your organization also works.
+4. Click **Save & test connection**. A green message means you are ready; open the chat and start asking.
 
-```json
-{
-  "safegraph.authMode": "bearer-token",
-  "safegraph.region": "ap-southeast-1",
-  "safegraph.modelId": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-}
-```
-
-For an AWS SSO profile:
-
-```json
-{
-  "safegraph.authMode": "aws-credentials",
-  "safegraph.awsProfile": "my-company-profile",
-  "safegraph.region": "ap-southeast-1",
-  "safegraph.modelId": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-}
-```
-
-The examples use the global Claude Haiku 4.5 model ID. If your organization provides an inference profile, replace `safegraph.modelId` with that profile ARN and keep `safegraph.region` aligned with it.
-
-Run `Developer: Reload Window`, open SafeGraph AI, and send a short test message. Never commit API keys, account IDs, or real inference-profile ARNs.
+The same values can also be set in `settings.json` (`safegraph.authMode`, `safegraph.region`, `safegraph.modelId`, `safegraph.awsProfile`). Never commit API keys, account IDs, or real inference-profile ARNs.
 
 AWS references: [model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html), [Bedrock API keys](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-generate.html), and [AWS CLI SSO](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sso.html).
 
@@ -291,35 +270,37 @@ Set:
 
 For simpler local onboarding:
 
-1. Run `Safegraph AI: Set Bedrock API Key`.
-2. Set `safegraph.authMode` to `bearer-token` or `auto`.
+1. Run `Safegraph AI: Setup` and choose **Bedrock API key**.
+2. Paste the key and click **Save & test connection**.
+
+### AWS access keys
+
+Run `Safegraph AI: Setup`, choose **AWS access key**, and enter the Access Key ID and Secret Access Key (plus a session token for temporary credentials). This sets `safegraph.authMode` to `access-keys`. The IAM principal needs `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream`.
 
 Do not commit real `.env` files, API keys, account IDs, or ARNs.
 
 ## Troubleshooting
 
-- **Missing model ID.** Follow **First-Time Amazon Bedrock Setup** above, then reload the VS Code window.
-- **No AWS credentials found.** Configure a supported AWS SDK credential source, or select `bearer-token` and store a Bedrock API key.
+- **AWS credentials are not configured.** Run `Safegraph AI: Setup`.
+- **`The security token included in the request is invalid`.** The access key or secret is wrong, or temporary credentials are missing their session token.
 - **Expired SSO session.** Sign in again with the AWS CLI for the profile selected by `safegraph.awsProfile`.
 - **Access denied.** Confirm the active IAM principal can invoke the configured Bedrock model or inference profile.
 - **Model not available in configured region.** Set `safegraph.region` to a region where the model is enabled and available.
 - **Invalid inference-profile ARN.** Check the ARN format, region, and profile identifier; do not paste real ARNs into committed files.
-- **Bearer token missing.** Run `Safegraph AI: Set Bedrock API Key`, then use `bearer-token` or `auto`.
+- **Bearer token missing.** Run `Safegraph AI: Setup` and store a Bedrock API key.
 
 ## Important Settings
 
 | Setting | Purpose |
 |---|---|
+| `safegraph.authMode` | `auto`, `bearer-token`, `access-keys`, or `aws-credentials` |
 | `safegraph.region` | AWS Bedrock region |
 | `safegraph.modelId` | Bedrock model id or inference profile ARN |
-| `safegraph.autoRun` | Controls command auto-run: `off`, `safe`, `ask` |
+| `safegraph.autoRun` | Agent-mode command auto-run: `safe` (allowlist), `ask`, `off` |
 | `safegraph.repositoryRag.enabled` | Enables local repository RAG |
 | `safegraph.repositoryRag.maxFiles` | Max files indexed for repository RAG |
 | `safegraph.repositoryRag.maxChunks` | Max chunks included in prompt |
 | `safegraph.repositoryRag.maxChars` | Max RAG context characters |
-| `safegraph.vectorRag.enabled` | Future semantic vector RAG toggle |
-| `safegraph.vectorRag.provider` | Future provider such as `turbovec-sidecar` |
-| `safegraph.agent.maxFixLoops` | Max autonomous repair loops |
 | `safegraph.completion.enabled` | Enable Claude Haiku 4.5 inline (ghost text) completion |
 | `safegraph.completion.triggerMode` | `automatic` or `manual` inline completion |
 | `safegraph.completion.modelId` | Optional override model for completion (defaults to `safegraph.modelId`) |
@@ -397,9 +378,8 @@ Current limits:
 
 - Model quality depends on the configured Bedrock model.
 - Browser automation is not included yet.
-- Vector RAG is scaffolded but not fully implemented.
+- Semantic vector RAG is not implemented; repository context uses local keyword/symbol retrieval.
 - Subagent notes are deterministic today, not separate model workers.
-- The extension is not bundled yet, so the VSIX is still large.
 
 ## Roadmap
 
@@ -408,7 +388,6 @@ Current limits:
 - Browser/app testing support.
 - More advanced IDE-grade diff review.
 - True multi-agent workers for reviewer, test-fixer, and context-scout.
-- Extension bundling to reduce VSIX size.
 
 ## Develop
 
