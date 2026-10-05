@@ -1119,21 +1119,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // rather than a raw exception dump.
           if (e instanceof BedrockConfigurationError) {
             this.output.appendLine(`[safegraph-ai] configuration error: ${e.message}`);
-            const action = await vscode.window.showErrorMessage(
-              e.message,
-              { modal: false },
-              "Open Setup",
-            );
-            if (action === "Open Setup") {
-              vscode.commands.executeCommand("safegraph.setup");
-            }
-            // Also surface in the chat panel so the user sees it inline.
+            // Unblock the chat first: awaiting the notification would leave the
+            // panel on "Thinking..." until the user dismissed it.
             const configErr: ExtensionToWebviewMessage = {
               type: "error",
               message: e.message,
               ts: Date.now()
             };
             webviewView.webview.postMessage(configErr);
+            void vscode.commands.executeCommand("safegraph.setup");
             return;
           }
 

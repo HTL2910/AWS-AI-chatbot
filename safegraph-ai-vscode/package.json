@@ -251,18 +251,6 @@
           "id": "safegraph.chatView",
           "name": "Chat",
           "type": "webview"
-        },
-        {
-          "id": "safegraph.agentManager",
-          "name": "Agent Manager",
-          "type": "webview",
-          "when": "safegraph.agent.enabled"
-        },
-        {
-          "id": "safegraph.artifactViewer",
-          "name": "Artifacts",
-          "type": "webview",
-          "when": "safegraph.artifact.autoGenerate"
         }
       ]
     }
