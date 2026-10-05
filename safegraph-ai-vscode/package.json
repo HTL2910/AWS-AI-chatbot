@@ -25,8 +25,6 @@
     "onCommand:safegraph.moveChatRight",
     "onCommand:safegraph.inlineEdit",
     "onCommand:safegraph.showHistory",
-    "onCommand:safegraph.openAgentManager",
-    "onCommand:safegraph.openArtifactViewer",
     "onCommand:safegraph.toggleCompletion",
     "onCommand:safegraph.triggerCompletion"
   ],
@@ -44,10 +42,6 @@
       {
         "command": "safegraph.openLog",
         "title": "Safegraph AI: Open Log"
-      },
-      {
-        "command": "safegraph.openAuditLog",
-        "title": "Safegraph AI: Open Audit Log"
       },
       {
         "command": "safegraph.moveChatRight",
@@ -72,14 +66,6 @@
       {
         "command": "safegraph.showHistory",
         "title": "Safegraph AI: Show Task History"
-      },
-      {
-        "command": "safegraph.openAgentManager",
-        "title": "Safegraph AI: Open Agent Manager"
-      },
-      {
-        "command": "safegraph.openArtifactViewer",
-        "title": "Safegraph AI: Open Artifact Viewer"
       },
       {
         "command": "safegraph.toggleCompletion",
