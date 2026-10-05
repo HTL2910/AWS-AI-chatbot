@@ -6,7 +6,7 @@
 - **Setup screen** (`Safegraph AI: Setup`): enter a Bedrock API key, AWS access keys (with optional session token) or an AWS profile, pick region and model, and test the connection. Opens automatically on first run when no credentials are configured.
 - `access-keys` auth mode backed by credentials stored in VS Code SecretStorage.
 - Read-only **Review** workflow and **Report** workflow (writes `SAFEGRAPH_REPORT.md`), with a Report button in the chat.
-- Release workflow: pushing a `v*` tag publishes the `.vsix` to GitHub Releases; CI uploads it as a build artifact.
+- Release workflow: pushing a version tag (`0.20.0` or `v0.20.0`) attaches the `.vsix` to the GitHub Release; it can also be run manually for an existing tag. CI uploads the `.vsix` as a build artifact.
 
 ### Changed
 - Chat, inline edit and inline completion share one credential resolver, so `safegraph.authMode` and `safegraph.awsProfile` now apply everywhere (previously chat always required a Bedrock API key).

@@ -179,7 +179,7 @@ SafeGraph AI records commands and verification results. A completed task include
 
 ## Install
 
-Download `safegraph-ai-0.20.0.vsix` from the GitHub Releases page (every `v*` tag publishes one; CI runs also attach it as a build artifact), then install it from the Extensions view (`···` → **Install from VSIX...**) or from a terminal:
+Download `safegraph-ai-0.20.0.vsix` from the GitHub Releases page (pushing a version tag such as `0.20.0` attaches it automatically; CI runs also keep it as a build artifact), then install it from the Extensions view (`···` → **Install from VSIX...**) or from a terminal:
 
 ```bash
 code --install-extension safegraph-ai-0.20.0.vsix --force
