@@ -1,21 +1,22 @@
 import * as vscode from "vscode";
 import { loadBedrockApiKeyFromDotEnv } from "./env";
+import type { BedrockAuthMode, StaticAwsCredentials } from "../bedrock/authResolver";
 
 /**
- * Default chat/agent model.
- * This must be configured by the user via settings.
- */
-export const DEFAULT_MODEL_ID = "";
-
-/**
- * Canonical Claude Haiku 4.5 model id on Amazon Bedrock. Used as a safe fallback
- * for direct model invocation when no inference profile is configured.
+ * Canonical Claude Haiku 4.5 model id on Amazon Bedrock (global cross-region
+ * inference profile).
  */
 export const HAIKU_45_MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0";
+
+/** Default chat/agent model used when safegraph.modelId is empty. */
+export const DEFAULT_MODEL_ID = HAIKU_45_MODEL_ID;
 
 export const DEFAULT_REGION = "ap-southeast-1";
 
 export const SECRET_KEY_NAME = "safegraph.bedrockApiKey";
+export const SECRET_ACCESS_KEY_ID = "safegraph.awsAccessKeyId";
+export const SECRET_SECRET_ACCESS_KEY = "safegraph.awsSecretAccessKey";
+export const SECRET_SESSION_TOKEN = "safegraph.awsSessionToken";
 
 export type BedrockModelConfig = {
   region: string;
@@ -113,4 +114,64 @@ export async function resolveBedrockApiKey(
     }
   }
   return apiKey;
+}
+
+/** Everything a Bedrock call needs besides the prompt. Spread into bedrockConverse options. */
+export type BedrockConnection = {
+  region: string;
+  modelId: string;
+  authMode: BedrockAuthMode;
+  apiKey?: string;
+  awsProfile?: string;
+  credentials?: StaticAwsCredentials;
+};
+
+export function getAuthMode(): BedrockAuthMode {
+  const value = vscode.workspace.getConfiguration("safegraph").get<string>("authMode");
+  return value === "bearer-token" || value === "access-keys" || value === "aws-credentials" ? value : "auto";
+}
+
+export async function loadStoredAccessKeys(
+  context: vscode.ExtensionContext
+): Promise<StaticAwsCredentials | undefined> {
+  const accessKeyId = ((await context.secrets.get(SECRET_ACCESS_KEY_ID)) || "").trim();
+  const secretAccessKey = ((await context.secrets.get(SECRET_SECRET_ACCESS_KEY)) || "").trim();
+  if (!accessKeyId || !secretAccessKey) return undefined;
+  const sessionToken = ((await context.secrets.get(SECRET_SESSION_TOKEN)) || "").trim();
+  return { accessKeyId, secretAccessKey, sessionToken: sessionToken || undefined };
+}
+
+/**
+ * Resolve the full Bedrock connection (region, model, auth) from settings and
+ * SecretStorage. Auth validation happens in the transport resolver, which throws
+ * a BedrockConfigurationError with an actionable message when something is missing.
+ */
+export async function resolveBedrockConnection(
+  context: vscode.ExtensionContext,
+  output?: vscode.OutputChannel,
+  base: BedrockModelConfig = getBedrockModelConfig()
+): Promise<BedrockConnection> {
+  const authMode = getAuthMode();
+  const cfg = vscode.workspace.getConfiguration("safegraph");
+  const awsProfile = readString(cfg, "awsProfile", "") || undefined;
+  const connection: BedrockConnection = { ...base, authMode, awsProfile };
+  if (authMode === "auto" || authMode === "bearer-token") {
+    connection.apiKey = (await resolveBedrockApiKey(context, output)) || undefined;
+  }
+  if (authMode === "auto" || authMode === "access-keys") {
+    connection.credentials = await loadStoredAccessKeys(context);
+  }
+  return connection;
+}
+
+/**
+ * True when the user has stored some credential, or explicitly chose the AWS
+ * credential chain (profile / environment / SSO), which cannot be checked up front.
+ */
+export async function hasBedrockCredentials(context: vscode.ExtensionContext): Promise<boolean> {
+  const authMode = getAuthMode();
+  if (authMode === "aws-credentials") return true;
+  if (authMode !== "access-keys" && (await resolveBedrockApiKey(context))) return true;
+  if (authMode !== "bearer-token" && (await loadStoredAccessKeys(context))) return true;
+  return false;
 }

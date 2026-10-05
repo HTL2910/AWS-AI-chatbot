@@ -40,10 +40,10 @@ export function getChatWebviewHtml(webview: vscode.Webview, extensionUri: vscode
           <button id="agentMode" class="topbarBtn agentToggle" type="button" title="Toggle autonomous apply/run behavior">
              <span class="statusDot"></span> Agent On
           </button>
-          <button id="setKey" class="topbarBtn" type="button" title="Save Bedrock API key">
+          <button id="setKey" class="topbarBtn" type="button" title="Setup AWS credentials &amp; model">
              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
           </button>
-          <button id="checkKey" class="topbarBtn" type="button" title="Check where Safegraph reads the Bedrock API key from">
+          <button id="checkKey" class="topbarBtn" type="button" title="Check which AWS credentials Safegraph is using">
              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
           </button>
           <button id="openLog" class="topbarBtn" type="button" title="Open Safegraph AI output log">
@@ -63,9 +63,10 @@ export function getChatWebviewHtml(webview: vscode.Webview, extensionUri: vscode
       <div id="messages" class="messages" aria-label="Chat messages">
         <div id="emptyState" class="emptyState">
           <div class="emptyTitle">Ready for this workspace</div>
-          <div class="emptyText">Ask for a fix, review current changes, attach files, or run a design pass.</div>
+          <div class="emptyText">Describe what to build or fix, ask for a code review, or generate a project report. First time? Click the key icon to connect AWS Bedrock.</div>
           <div class="emptyActions">
             <button class="emptyAction" type="button" data-prompt="Review the current workspace changes. Focus on bugs, regressions, missing tests, and risky code. Give concise findings first with file paths.">Review changes</button>
+            <button class="emptyAction" type="button" data-prompt="Write a project report for this workspace: overview, current build/test status, recent changes, issues and risks by severity, and recommended next steps.">Project report</button>
             <button class="emptyAction" type="button" data-prompt="Fix the current diagnostics, type errors, and obvious failing code in this workspace. If changes are needed, return a clean unified diff.">Fix diagnostics</button>
           </div>
         </div>
@@ -78,6 +79,7 @@ export function getChatWebviewHtml(webview: vscode.Webview, extensionUri: vscode
           </button>
           <button id="reviewWorkspace" class="toolBtn" type="button" title="Review the current workspace">Review</button>
           <button id="fixDiagnostics" class="toolBtn" type="button" title="Fix diagnostics and errors">Fix</button>
+          <button id="projectReport" class="toolBtn" type="button" title="Generate a project report (SAFEGRAPH_REPORT.md)">Report</button>
           <button id="designMockup" class="toolBtn" type="button" title="Analyze requirements, design a mockup, and implement the UI">Design</button>
         </div>
         <input id="fileInput" type="file" multiple hidden />

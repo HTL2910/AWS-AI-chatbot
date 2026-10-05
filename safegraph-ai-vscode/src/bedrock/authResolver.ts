@@ -7,20 +7,24 @@
  * Rules:
  *  - modelId, bearerToken, and AWS credentials are independent inputs.
  *  - No string inspection (no startsWith, no length checks).
- *  - "auto" mode picks Bearer when a token is present, SDK otherwise.
+ *  - "auto" mode picks Bearer when a token is present, then explicit access
+ *    keys, then the SDK default credential chain / profile.
  */
 
 import { BedrockConfigurationError } from "./bedrockErrors";
 import type { BedrockTransport } from "./transports/bedrockTransport";
 import { BearerBedrockTransport } from "./transports/bearerBedrockTransport";
 import { SdkBedrockTransport } from "./transports/sdkBedrockTransport";
+import type { StaticAwsCredentials } from "./transports/sdkBedrockTransport";
 
-export type BedrockAuthMode = "auto" | "aws-credentials" | "bearer-token";
+export type BedrockAuthMode = "auto" | "aws-credentials" | "bearer-token" | "access-keys";
+export type { StaticAwsCredentials };
 
 export interface BedrockAuthOptions {
   authMode: BedrockAuthMode;
   bearerToken?: string;
   awsProfile?: string;
+  credentials?: StaticAwsCredentials;
   region: string;
   extensionVersion?: string;
 }
@@ -40,10 +44,28 @@ export function resolveBedrockTransport(options: BedrockAuthOptions): BedrockTra
       if (!options.bearerToken?.trim()) {
         throw new BedrockConfigurationError(
           "Bearer-token authentication is selected, but no Bedrock API key is configured.\n\n" +
-          "Add AWS_BEARER_TOKEN_BEDROCK to your workspace .env file, or click 'Set Key' in the chat panel.",
+          "Run 'Safegraph AI: Setup' (or click the key icon in the chat panel) to enter it.",
         );
       }
       return new BearerBedrockTransport(options.bearerToken.trim(), options.extensionVersion);
+
+    case "access-keys": {
+      const creds = options.credentials;
+      if (!creds?.accessKeyId?.trim() || !creds.secretAccessKey?.trim()) {
+        throw new BedrockConfigurationError(
+          "Access-key authentication is selected, but the AWS Access Key ID or Secret Access Key is missing.\n\n" +
+          "Run 'Safegraph AI: Setup' to enter them.",
+        );
+      }
+      return new SdkBedrockTransport({
+        region: options.region,
+        credentials: {
+          accessKeyId: creds.accessKeyId.trim(),
+          secretAccessKey: creds.secretAccessKey.trim(),
+          sessionToken: creds.sessionToken?.trim() || undefined,
+        },
+      });
+    }
 
     case "aws-credentials":
       return new SdkBedrockTransport({
@@ -52,12 +74,16 @@ export function resolveBedrockTransport(options: BedrockAuthOptions): BedrockTra
       });
 
     case "auto":
-      return options.bearerToken?.trim()
-        ? new BearerBedrockTransport(options.bearerToken.trim(), options.extensionVersion)
-        : new SdkBedrockTransport({
-            region: options.region,
-            profile: options.awsProfile?.trim() || undefined,
-          });
+      if (options.bearerToken?.trim()) {
+        return new BearerBedrockTransport(options.bearerToken.trim(), options.extensionVersion);
+      }
+      if (options.credentials?.accessKeyId?.trim() && options.credentials.secretAccessKey?.trim()) {
+        return resolveBedrockTransport({ ...options, authMode: "access-keys" });
+      }
+      return new SdkBedrockTransport({
+        region: options.region,
+        profile: options.awsProfile?.trim() || undefined,
+      });
 
     default:
       return assertNever(options.authMode);

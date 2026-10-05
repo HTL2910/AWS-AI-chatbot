@@ -19,20 +19,23 @@
     "onStartupFinished",
     "onView:safegraph.chatView",
     "onCommand:safegraph.openChat",
+    "onCommand:safegraph.setup",
     "onCommand:safegraph.setBedrockApiKey",
     "onCommand:safegraph.checkBedrockApiKey",
     "onCommand:safegraph.openLog",
     "onCommand:safegraph.moveChatRight",
     "onCommand:safegraph.inlineEdit",
     "onCommand:safegraph.showHistory",
-    "onCommand:safegraph.openAgentManager",
-    "onCommand:safegraph.openArtifactViewer",
     "onCommand:safegraph.toggleCompletion",
     "onCommand:safegraph.triggerCompletion"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "safegraph.setup",
+        "title": "Safegraph AI: Setup (AWS Credentials & Model)"
+      },
       {
         "command": "safegraph.setBedrockApiKey",
         "title": "Safegraph AI: Set Bedrock API Key"
@@ -44,10 +47,6 @@
       {
         "command": "safegraph.openLog",
         "title": "Safegraph AI: Open Log"
-      },
-      {
-        "command": "safegraph.openAuditLog",
-        "title": "Safegraph AI: Open Audit Log"
       },
       {
         "command": "safegraph.moveChatRight",
@@ -72,14 +71,6 @@
       {
         "command": "safegraph.showHistory",
         "title": "Safegraph AI: Show Task History"
-      },
-      {
-        "command": "safegraph.openAgentManager",
-        "title": "Safegraph AI: Open Agent Manager"
-      },
-      {
-        "command": "safegraph.openArtifactViewer",
-        "title": "Safegraph AI: Open Artifact Viewer"
       },
       {
         "command": "safegraph.toggleCompletion",
@@ -127,11 +118,18 @@
           "type": "string",
           "enum": [
             "auto",
-            "aws-credentials",
-            "bearer-token"
+            "bearer-token",
+            "access-keys",
+            "aws-credentials"
+          ],
+          "enumDescriptions": [
+            "Use a stored Bedrock API key, then stored AWS access keys, then the AWS credential chain.",
+            "Bedrock API key (bearer token) stored via Safegraph AI: Setup.",
+            "AWS Access Key ID / Secret Access Key stored via Safegraph AI: Setup.",
+            "AWS credential chain: profile (safegraph.awsProfile), SSO or environment variables."
           ],
           "default": "auto",
-          "description": "Authentication method for Amazon Bedrock. Auto uses a configured bearer token first, then the AWS credential chain."
+          "description": "Authentication method for Amazon Bedrock. Run 'Safegraph AI: Setup' to configure it."
         },
         "safegraph.awsProfile": {
           "type": "string",
@@ -145,8 +143,8 @@
         },
         "safegraph.modelId": {
           "type": "string",
-          "default": "",
-          "description": "Amazon Bedrock model ID or inference profile ARN. This setting must be configured before making requests."
+          "default": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+          "description": "Amazon Bedrock model ID or inference profile ARN. Defaults to Claude Haiku 4.5 (global inference profile)."
         },
         "safegraph.repositoryRag.enabled": {
           "type": "boolean",
@@ -174,81 +172,10 @@
           "maximum": 80000,
           "description": "Maximum characters of repository RAG context included in each prompt."
         },
-        "safegraph.vectorRag.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enable optional semantic vector retrieval for repository context. Disabled by default until a sidecar provider is configured."
-        },
-        "safegraph.vectorRag.provider": {
-          "type": "string",
-          "enum": [
-            "disabled",
-            "turbovec-sidecar"
-          ],
-          "default": "disabled",
-          "description": "Semantic vector retrieval provider. turbovec-sidecar is planned for compressed local vector RAG."
-        },
-        "safegraph.vectorRag.embeddingProvider": {
-          "type": "string",
-          "enum": [
-            "bedrock",
-            "local",
-            "external"
-          ],
-          "default": "bedrock",
-          "description": "Embedding source for future vector RAG indexing."
-        },
-        "safegraph.vectorRag.dim": {
-          "type": "number",
-          "default": 1536,
-          "minimum": 8,
-          "maximum": 8192,
-          "description": "Embedding dimension for future vector RAG indexing."
-        },
-        "safegraph.vectorRag.bitWidth": {
-          "type": "number",
-          "enum": [
-            2,
-            4
-          ],
-          "default": 4,
-          "description": "TurboQuant bit width for future turbovec compressed indexes."
-        },
-        "safegraph.vectorRag.maxResults": {
-          "type": "number",
-          "default": 12,
-          "minimum": 1,
-          "maximum": 80,
-          "description": "Maximum semantic vector retrieval results before reranking and prompt compaction."
-        },
-        "safegraph.agent.maxFixLoops": {
-          "type": "number",
-          "default": 2,
-          "minimum": 0,
-          "maximum": 3,
-          "description": "Maximum autonomous edit-test-fix loops after Safegraph applies a diff. Only safe allowlisted commands auto-run."
-        },
         "safegraph.mcp.codegraph.enabled": {
           "type": "boolean",
           "default": false,
           "description": "Start the optional external CodeGraph MCP server with npx for repository analysis. Disabled by default to avoid slow or failing network-backed startup."
-        },
-        "safegraph.agent.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable multi-agent orchestration system for complex tasks."
-        },
-        "safegraph.agent.maxConcurrent": {
-          "type": "number",
-          "default": 3,
-          "minimum": 1,
-          "maximum": 10,
-          "description": "Maximum number of concurrent agents running."
-        },
-        "safegraph.artifact.autoGenerate": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically generate artifacts for task verification."
         },
         "safegraph.completion.enabled": {
           "type": "boolean",
@@ -306,11 +233,6 @@
           "type": "string",
           "default": "",
           "description": "Custom system prompt appended to the built-in Safegraph AI prompt. Leave empty to use the default. Supports Vietnamese/English."
-        },
-        "safegraph.multifile.dependencyAnalysis": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable dependency analysis for multi-file editing."
         }
       }
     },
@@ -351,9 +273,9 @@
     "typecheck": "tsc -p . --noEmit",
     "test": "jest --watchman=false --coverage",
     "test:ci": "jest --watchman=false --runInBand --coverage",
-    "build": "npm run build:webview && npm run build:ext",
+    "build": "npm run build:ext",
     "watch": "tsc -p . -w",
-    "package": "npm run build && node scripts/package-vsix.js",
+    "package": "npm run typecheck && node scripts/package-vsix.js",
     "verify": "npm run typecheck && npm run test:ci && npm run build",
     "release:verify": "npm run verify && npm run package"
   },
@@ -372,6 +294,7 @@
     "@typescript-eslint/eslint-plugin": "^7.10.0",
     "@typescript-eslint/parser": "^7.10.0",
     "@vscode/vsce": "^2.26.0",
+    "esbuild": "^0.25.12",
     "eslint": "^8.57.0",
     "jest": "^29.7.0",
     "prettier": "^3.2.5",

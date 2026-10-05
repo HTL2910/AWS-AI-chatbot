@@ -16,7 +16,7 @@
 
 import type { BedrockConverseRequest, BedrockMessage, BedrockStreamEvent } from "./bedrockTypes";
 import { resolveBedrockTransport } from "./authResolver";
-import type { BedrockAuthMode } from "./authResolver";
+import type { BedrockAuthMode, StaticAwsCredentials } from "./authResolver";
 import { withBedrockRetry } from "./retryPolicy";
 import { isExpiredBearerTokenError, BedrockConfigurationError } from "./bedrockErrors";
 
@@ -31,6 +31,8 @@ export type BedrockConverseOptions = {
   authMode?: BedrockAuthMode;
   /** Named AWS profile (used when authMode is "aws-credentials" or "auto" without token). */
   awsProfile?: string;
+  /** Explicit AWS access keys (used when authMode is "access-keys" or "auto" without token). */
+  credentials?: StaticAwsCredentials;
   /** Extension version for User-Agent header e.g. "0.19.0" */
   extensionVersion?: string;
   system?: string;
@@ -75,7 +77,7 @@ export function validateBedrockConfiguration(options: BedrockClientOptions): voi
   if (!options.modelId.trim()) {
     throw new BedrockConfigurationError(
       "No Bedrock model is configured.\n\n" +
-      "Open Settings and set safegraph.modelId.\n\n" +
+      "Run 'Safegraph AI: Setup' or open Settings and set safegraph.modelId.\n\n" +
       "Recommended Claude Haiku 4.5 model ID:\n" +
       "global.anthropic.claude-haiku-4-5-20251001-v1:0\n\n" +
       "You may also use an inference profile ARN supplied by your organization.",
@@ -129,6 +131,7 @@ export async function bedrockConverse(
     authMode: options.authMode ?? "auto",
     bearerToken: options.apiKey,
     awsProfile: options.awsProfile,
+    credentials: options.credentials,
     region: options.region,
     extensionVersion: options.extensionVersion,
   });
@@ -152,6 +155,7 @@ export async function bedrockConverseStream(
     authMode: options.authMode ?? "auto",
     bearerToken: options.apiKey,
     awsProfile: options.awsProfile,
+    credentials: options.credentials,
     region: options.region,
     extensionVersion: options.extensionVersion,
   });

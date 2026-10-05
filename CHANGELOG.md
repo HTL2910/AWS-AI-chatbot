@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Setup screen** (`Safegraph AI: Setup`): enter a Bedrock API key, AWS access keys (with optional session token) or an AWS profile, pick region and model, and test the connection. Opens automatically on first run when no credentials are configured.
+- `access-keys` auth mode backed by credentials stored in VS Code SecretStorage.
+- Read-only **Review** workflow and **Report** workflow (writes `SAFEGRAPH_REPORT.md`), with a Report button in the chat.
+- Release workflow: pushing a `v*` tag publishes the `.vsix` to GitHub Releases; CI uploads it as a build artifact.
+
+### Changed
+- Chat, inline edit and inline completion share one credential resolver, so `safegraph.authMode` and `safegraph.awsProfile` now apply everywhere (previously chat always required a Bedrock API key).
+- `safegraph.modelId` defaults to Claude Haiku 4.5 (`global.anthropic.claude-haiku-4-5-20251001-v1:0`).
+- `safegraph.autoRun` now controls command auto-run in Agent mode.
+- The extension is bundled with esbuild: the VSIX drops from ~12 MB / 6,700 files to ~1.3 MB / 10 files.
+
+### Removed
+- Unused modules (agent, artifact, async, deploy, monitor, multifile, quality, refactor, release, test scaffolding), settings that were never read, and unregistered commands.
+
 ## [0.19.0] - 2026-07-24
 
 ### Added

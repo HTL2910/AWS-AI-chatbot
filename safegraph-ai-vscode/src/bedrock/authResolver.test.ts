@@ -5,6 +5,44 @@ import { validateBedrockConfiguration, BedrockConfigurationError } from "./bedro
 
 describe("authResolver & config validation", () => {
   describe("resolveBedrockTransport", () => {
+    it("selects SdkBedrockTransport when authMode is access-keys and both keys are present", () => {
+      const transport = resolveBedrockTransport({
+        authMode: "access-keys",
+        credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+        region: "us-east-1",
+      });
+      expect(transport).toBeInstanceOf(SdkBedrockTransport);
+    });
+
+    it("throws BedrockConfigurationError when authMode is access-keys but the secret is missing", () => {
+      expect(() =>
+        resolveBedrockTransport({
+          authMode: "access-keys",
+          credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: " " },
+          region: "us-east-1",
+        })
+      ).toThrow(BedrockConfigurationError);
+    });
+
+    it("auto mode prefers a bearer token over stored access keys", () => {
+      const transport = resolveBedrockTransport({
+        authMode: "auto",
+        bearerToken: "token",
+        credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+        region: "us-east-1",
+      });
+      expect(transport).toBeInstanceOf(BearerBedrockTransport);
+    });
+
+    it("auto mode uses stored access keys when no bearer token is present", () => {
+      const transport = resolveBedrockTransport({
+        authMode: "auto",
+        credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+        region: "us-east-1",
+      });
+      expect(transport).toBeInstanceOf(SdkBedrockTransport);
+    });
+
     it("selects BearerBedrockTransport when authMode is bearer-token and token is present", () => {
       const transport = resolveBedrockTransport({
         authMode: "bearer-token",

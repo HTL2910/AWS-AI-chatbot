@@ -68,6 +68,7 @@ function renderEnhancedDiff(diffText) {
   const reviewWorkspaceEl = document.getElementById("reviewWorkspace");
   const fixDiagnosticsEl = document.getElementById("fixDiagnostics");
   const designMockupEl = document.getElementById("designMockup");
+  const projectReportEl = document.getElementById("projectReport");
   const fileInputEl = document.getElementById("fileInput");
   const mentionEl = document.getElementById("mention");
 
@@ -258,7 +259,7 @@ function renderEnhancedDiff(diffText) {
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       const prompt = btn.getAttribute("data-prompt") || "";
-      if (prompt) sendPrompt(prompt, prompt.includes("Fix") ? { agentMode: true } : undefined);
+      if (prompt) sendPrompt(prompt, /^(Fix|Write a project report)/.test(prompt) ? { agentMode: true } : undefined);
     });
   });
 
@@ -1214,6 +1215,16 @@ function renderEnhancedDiff(diffText) {
       e.preventDefault();
       sendPrompt(
         "Fix the current diagnostics, type errors, and obvious failing code in this workspace. If changes are needed, return a clean unified diff.",
+        { agentMode: true }
+      );
+    });
+  }
+
+  if (projectReportEl) {
+    projectReportEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      sendPrompt(
+        "Write a project report for this workspace: overview, current build/test status, recent changes, issues and risks by severity, and recommended next steps.",
         { agentMode: true }
       );
     });

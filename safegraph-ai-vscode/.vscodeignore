@@ -1,18 +1,16 @@
 .env
 .env.*
 *.vsix
+.gitignore
+.nvmrc
+node_modules/**
+RELEASE_NOTES_0.17.0.md
 
 # Build/test artifacts
 coverage/**
 scratch/**
-webview-ui/node_modules/**
-webview-ui/src/**
-webview-ui/public/**
-webview-ui/*.json
-webview-ui/*.js
-webview-ui/*.ts
-webview-ui/*.html
-webview-ui/README.md
+# Experimental React UI, not used at runtime (the chat view uses media/).
+webview-ui/**
 
 # Source and dev-only tooling. Runtime uses compiled out/ files.
 src/**

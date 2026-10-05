@@ -8,12 +8,13 @@ import { getChatWebviewHtml } from "./webviewHtml";
 import { bedrockConverse, bedrockConverseStream, BedrockConfigurationError } from "../bedrock/bedrockClient";
 import { buildContext } from "../context/contextBuilder";
 import { maskSensitive } from "../security/mask";
-import { loadBedrockApiKeyFromDotEnv, loadBedrockApiKeyInfos, maskApiKey } from "../config/env";
-import { getChatConfig } from "../config/bedrock";
+import { loadBedrockApiKeyInfos, maskApiKey } from "../config/env";
+import { getAuthMode, getBedrockModelConfig, getChatConfig, hasBedrockCredentials, loadStoredAccessKeys, resolveBedrockConnection } from "../config/bedrock";
 import { applyUnifiedDiffToWorkspaceSmart, parseUnifiedDiff, preflightUnifiedDiffAgainstWorkspace } from "../apply/unifiedDiff";
 import { McpClientManager } from "../mcp/McpClient";
 import { CommandRunner, CommandRunResult, CommandUpdateMessage } from "../terminal/commandRunner";
 import { AutoRunMode, decideCommand } from "../terminal/commandPolicy";
+import { inferRequestType } from "./requestType";
 import { extractDiffBlocks, formatApplyError, shellQuote, stripDiffBlocksForLiveApply } from "./diffText";
 import { HistoryManager } from "../history/HistoryManager";
 import {
@@ -181,38 +182,6 @@ Patch rules:
   return base;
 }
 
-function inferRequestType(text: string) {
-  const normalized = text.toLowerCase();
-  if (/(diagnose|debug|reproduce|perf|performance|regression|fix|bug|error|traceback|lỗi|sửa|không chạy|failed|exception|diagnostic)/i.test(normalized)) {
-    return "bugfix/debug";
-  }
-  if (/(unexpected non-whitespace|favicon|404|console error|browser console|load resource)/i.test(normalized)) {
-    return "frontend-data/static-asset-debug";
-  }
-  if (/(tdd|test.?first|red.?green|regression test|integration test|unit test|kiểm thử|test)/i.test(normalized)) {
-    return "tdd/test-first";
-  }
-  if (/(architecture|kiến trúc|refactor|deep module|seam|adapter|coupling|testability|maintainability|codebase|module)/i.test(normalized)) {
-    return "architecture/refactor";
-  }
-  if (/(clarify|grill|spec|prd|domain|glossary|adr|context\.md|requirement|yêu cầu|ngữ cảnh)/i.test(normalized)) {
-    return "domain-clarification";
-  }
-  if (/(prototype|throwaway|spike|mockup|mockups|sample data|demo data|variation|explore design|wireframe|mvp screen|giao diện mẫu|dữ liệu mẫu)/i.test(normalized)) {
-    return "prototype";
-  }
-  if (/(build|package|release|version|cài|install|vsix|deploy|update)/i.test(normalized)) {
-    return "build/release/update";
-  }
-  if (/(ui|html|css|frontend|mockup|website|dashboard|giao diện|design)/i.test(normalized)) {
-    return "frontend/ui";
-  }
-  if (/(review|audit|kiểm tra|refactor|cleanup|format)/i.test(normalized)) {
-    return "review/refactor";
-  }
-  return "general coding task";
-}
-
 function workflowForRequestType(requestType: string) {
   switch (requestType) {
     case "frontend-data/static-asset-debug":
@@ -271,6 +240,24 @@ function workflowForRequestType(requestType: string) {
         "- For early mockups, completeness means: realistic sample data, visible primary workflow, responsive layout, meaningful empty/loading/error states, and enough interaction to inspect the idea.",
         "- Prefer one cohesive screen or flow over production architecture. Avoid real backend integration unless it already exists.",
         "- Verification can be lightweight: HTML syntax sanity, JSON parse for sample data, npm build if applicable, or a note that the file opens directly in a browser."
+      ].join("\n");
+    case "review":
+      return [
+        "Selected workflow: Code review (read-only).",
+        "- Inspect the current git diff first (git status / git diff); if there is no diff, review the files the user tagged or the most relevant modules.",
+        "- Read enough surrounding code to confirm each issue; do not report guesses.",
+        "- Report findings ordered by severity: Critical, High, Medium, Low. For each: file:line, what is wrong, a concrete failure scenario, and the suggested fix.",
+        "- Cover correctness, security, error handling, missing tests, and performance. Skip pure style nits unless they hide a bug.",
+        "- Do NOT apply diffs or edit files during a review. End by offering to fix the findings."
+      ].join("\n");
+    case "report":
+      return [
+        "Selected workflow: Project report.",
+        "- Gather evidence with read-only tools: project structure, package/build files, README, git status and recent changes, diagnostics, and test/build results when a safe verification command exists.",
+        "- Write a Markdown report with these sections: Summary, Project overview (stack, structure, entry points), Current state (build/test/diagnostics status with the commands you ran), Recent changes, Issues and risks (ordered by severity, with file paths), Recommendations / next steps.",
+        "- Base every statement on evidence you collected; mark anything unverified as such.",
+        "- Save the report by creating SAFEGRAPH_REPORT.md at the target root with a unified diff (overwrite if it exists), and also show the Summary and top issues in chat.",
+        "- Do not modify any other file."
       ].join("\n");
     default:
       return [
@@ -583,32 +570,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.currentAbort = new AbortController();
           this.autoRunDoneFor.delete(msg.id);
 
-          let apiKey = (await this.context.secrets.get("safegraph.bedrockApiKey")) || "";
-          if (!apiKey) {
-            const envKey = await loadBedrockApiKeyFromDotEnv([this.context.extensionUri.fsPath]);
-            if (envKey) {
-              apiKey = envKey;
-              await this.context.secrets.store("safegraph.bedrockApiKey", apiKey);
-              this.output.appendLine("[safegraph-ai] loaded Bedrock API key from .env into SecretStorage");
-            }
-          }
-          if (!apiKey) {
+          if (!(await hasBedrockCredentials(this.context))) {
             const err: ExtensionToWebviewMessage = {
               type: "error",
               message:
-                "Missing Bedrock API key. Add AWS_BEARER_TOKEN_BEDROCK (or API_KEY) to workspace .env, or click 'Set Key' in the chat header.",
+                "AWS credentials are not configured. Click the key icon in the chat header (or run 'Safegraph AI: Setup') to enter a Bedrock API key or AWS access keys.",
               ts: Date.now()
             };
             webviewView.webview.postMessage(err);
+            void vscode.commands.executeCommand("safegraph.setup");
             return;
           }
+          const connection = await resolveBedrockConnection(this.context, this.output);
 
           const cfg = vscode.workspace.getConfiguration("safegraph");
           const targetRoot = await this.inferTargetRoot(msg.taggedFiles || []);
           this.currentTargetRoot = targetRoot;
           this.output.appendLine(`[safegraph-ai] target root: ${targetRoot?.fsPath || "(none)"}`);
-          const region = String(cfg.get("region") || "ap-southeast-1");
-          const modelId = String(cfg.get("modelId") || "");
           const taggedFilesForRequest = msg.taggedFiles || [];
           const maskedQuestion = maskSensitive(msg.text);
           const requestType = inferRequestType(maskedQuestion);
@@ -680,7 +658,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           let forcedSynthesis = false;
 
           const cfg2 = vscode.workspace.getConfiguration("safegraph");
-          const mode: AutoRunMode = msg.agentMode ? "safe" : "ask";
+          // Agent mode honours safegraph.autoRun; outside agent mode every command needs approval.
+          const configuredAutoRun = cfg2.get<string>("autoRun", "safe");
+          const agentAutoRun: AutoRunMode = configuredAutoRun === "off" || configuredAutoRun === "ask" ? configuredAutoRun : "safe";
+          const mode: AutoRunMode = msg.agentMode ? agentAutoRun : "ask";
 
           const cwd = targetRoot?.fsPath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
 
@@ -758,9 +739,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const chatCfg = getChatConfig();
             for (;;) {
               const responseOptions = {
-                region,
-                modelId,
-                apiKey,
+                ...connection,
                 extensionVersion: this.context?.extension?.packageJSON?.version,
                 system: systemPrompt,
                 signal: this.currentAbort?.signal,
@@ -1143,13 +1122,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const action = await vscode.window.showErrorMessage(
               e.message,
               { modal: false },
-              "Open Settings",
+              "Open Setup",
             );
-            if (action === "Open Settings") {
-              vscode.commands.executeCommand(
-                "workbench.action.openSettings",
-                "safegraph.modelId",
-              );
+            if (action === "Open Setup") {
+              vscode.commands.executeCommand("safegraph.setup");
             }
             // Also surface in the chat panel so the user sees it inline.
             const configErr: ExtensionToWebviewMessage = {
@@ -1954,6 +1930,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (requestType === "architecture/refactor" || requestType === "review/refactor") {
       return ["Inspect architecture and changed files", "Identify concrete risks", "Apply focused refactor if needed", "Run verification", "Summarize result and risk"];
     }
+    if (requestType === "review") {
+      return ["Inspect changed files", "Confirm concrete issues", "Report findings by severity", "Offer fixes"];
+    }
+    if (requestType === "report") {
+      return ["Collect project evidence", "Run safe verification", "Write SAFEGRAPH_REPORT.md", "Summarize in chat"];
+    }
     if (requestType === "prototype" || requestType === "frontend/ui") {
       return ["Identify target UI workflow", "Implement inspectable screen/state", "Check responsive/build behavior", "Summarize result and risk"];
     }
@@ -2311,47 +2293,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return bullets.join("\n");
   }
 
-  private async loadApiKey() {
-    let apiKey = (await this.context.secrets.get("safegraph.bedrockApiKey")) || "";
-    if (!apiKey) {
-      const envKey = await loadBedrockApiKeyFromDotEnv([this.context.extensionUri.fsPath]);
-      if (envKey) {
-        apiKey = envKey;
-        await this.context.secrets.store("safegraph.bedrockApiKey", apiKey);
-        this.output.appendLine("[safegraph-ai] loaded Bedrock API key from .env into SecretStorage");
-      }
-    }
-    return apiKey;
-  }
-
   async checkApiKeyStatus() {
     const secretKey = (await this.context.secrets.get("safegraph.bedrockApiKey")) || "";
+    const accessKeys = await loadStoredAccessKeys(this.context);
     const envInfos = await loadBedrockApiKeyInfos([this.context.extensionUri.fsPath]);
+    const { region, modelId } = getBedrockModelConfig();
+    const authMode = getAuthMode();
 
-    const lines: string[] = [];
-    if (secretKey) {
-      lines.push(`SecretStorage: ${maskApiKey(secretKey)}`);
-    } else {
-      lines.push("SecretStorage: empty");
-    }
-
+    const lines: string[] = [`Auth mode: ${authMode}`, `Region: ${region}`, `Model: ${modelId}`];
+    lines.push(`Bedrock API key (SecretStorage): ${secretKey ? maskApiKey(secretKey) : "empty"}`);
+    lines.push(`AWS access key (SecretStorage): ${accessKeys ? maskApiKey(accessKeys.accessKeyId) : "empty"}`);
     if (envInfos.length) {
       lines.push("Detected .env/process keys:");
       for (const info of envInfos) {
         lines.push(`- ${info.keyName} from ${info.source}: ${maskApiKey(info.value)}`);
       }
-    } else {
-      lines.push("Detected .env/process keys: none");
     }
 
-    const effective = secretKey ? "VS Code SecretStorage" : envInfos[0]?.source;
-    if (effective) {
-      vscode.window.showInformationMessage(`Safegraph AI: Bedrock key found from ${effective}.`);
+    if (await hasBedrockCredentials(this.context)) {
+      vscode.window.showInformationMessage(`Safegraph AI: credentials configured (${authMode}, ${region}).`);
     } else {
-      vscode.window.showWarningMessage("Safegraph AI: No Bedrock API key found.");
+      const action = await vscode.window.showWarningMessage("Safegraph AI: No AWS credentials configured.", "Open Setup");
+      if (action === "Open Setup") void vscode.commands.executeCommand("safegraph.setup");
     }
 
-    this.output.appendLine("[safegraph-ai] Bedrock API key status");
+    this.output.appendLine("[safegraph-ai] Bedrock credential status");
     this.output.appendLine(lines.join("\n"));
     this.output.show(true);
   }
@@ -2624,43 +2590,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private modelConfig() {
-    const cfg = vscode.workspace.getConfiguration("safegraph");
-    return {
-      region: String(cfg.get("region") || "ap-southeast-1"),
-      modelId: String(cfg.get("modelId") || "")
-    };
-  }
-
-  private async converseComplete(prompt: string, options: { region: string; modelId: string; apiKey: string; maxTokens?: number; temperature?: number }) {
-    const chatCfg2 = getChatConfig();
-    let combined = "";
-    let loops = 0;
-    let nextPrompt = prompt;
-    for (;;) {
-      const r = await bedrockConverse(nextPrompt, {
-        region: options.region,
-        modelId: options.modelId,
-        apiKey: options.apiKey,
-        signal: this.currentAbort?.signal,
-        maxTokens: options.maxTokens ?? chatCfg2.maxTokens,
-        temperature: options.temperature ?? chatCfg2.temperature
-      });
-      combined = (combined + (combined ? "\n" : "") + r.text).trim();
-      loops += 1;
-      if (this.currentAbort?.signal.aborted) throw new Error("aborted");
-      if (r.stopReason !== "max_tokens" || loops >= 2) break;
-      nextPrompt = `${prompt}\n\nContinue from where you left off. Do not repeat earlier text.\n\nPrevious output:\n${combined}\n\nContinue:`;
-    }
-    return combined;
-  }
-
-
   private async repairDiffWithBedrock(diff: string, errorMessage: string, reason: string, targetRoot?: vscode.Uri) {
-    const apiKey = await this.loadApiKey();
-    if (!apiKey) throw new Error(`Cannot repair diff automatically: missing Bedrock API key. Original error: ${errorMessage}`);
-
-    const { region, modelId } = this.modelConfig();
+    if (!(await hasBedrockCredentials(this.context))) {
+      throw new Error(`Cannot repair diff automatically: AWS credentials are not configured. Original error: ${errorMessage}`);
+    }
+    const connection = await resolveBedrockConnection(this.context, this.output);
     const ctx = await buildContext({
       maxChars: 24000,
       maxFiles: 80,
@@ -2699,9 +2633,7 @@ ${diff}
 
     const chatCfg3 = getChatConfig();
     const repaired = await bedrockConverse(prompt, {
-      region,
-      modelId,
-      apiKey,
+      ...connection,
       maxTokens: chatCfg3.maxTokens,
       temperature: chatCfg3.temperature,
       signal: this.currentAbort?.signal
