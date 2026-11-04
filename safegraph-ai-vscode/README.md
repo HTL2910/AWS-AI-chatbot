@@ -99,8 +99,8 @@ Secrets (API key, access keys) are stored in VS Code SecretStorage, never in set
 
 ## Cost And Security
 
-- Every request is billed to your AWS account by Amazon Bedrock. Set up AWS billing alerts.
-- The extension talks directly to Bedrock Runtime; there is no Safegraph server in between.
+- Bedrock requests are billed by AWS. Set up billing alerts. OpenAI-compatible requests are billed by that endpoint. A local 9Router stays on your machine.
+- The extension talks directly to Bedrock or to the OpenAI-compatible base URL you set. There is no Safegraph server in between. A failed OpenAI-compatible request does not fall back to Bedrock.
 - Commands proposed by the agent run only if they are on the safe allowlist (or you approve them).
 - Review applied change sets before keeping them.
 
