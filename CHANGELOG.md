@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.5] - 2026-11-04
+
+### Added
+- OpenAI-compatible provider alongside Amazon Bedrock. Setup can target 9Router (`http://localhost:20128/v1`), OpenRouter, LiteLLM, OpenAI, or any `/v1/chat/completions` endpoint. API keys are stored in SecretStorage. The chat header can switch models, including a free-text model name.
+- Chat, inline completion, and inline edit share one provider session. Bedrock stays the default, and a failed OpenAI-compatible request does not fall back to Bedrock.
+- Token usage in the chat composer when the endpoint returns it.
+
 ## [0.20.0] - 2026-10-05
 
 ### Added

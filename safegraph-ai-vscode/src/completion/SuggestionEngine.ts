@@ -1,12 +1,13 @@
 /**
  * Suggestion Engine
- * Generates Claude Haiku 4.5 powered inline code suggestions.
+ * Generates inline code suggestions from the active model provider.
  */
 
 import * as vscode from 'vscode';
 import { CodeContext } from './ContextAnalyzer';
-import { bedrockConverse } from '../bedrock/bedrockClient';
-import { getCompletionConfig, hasBedrockCredentials, resolveBedrockConnection } from '../config/bedrock';
+import { getCompletionConfig } from "../config/bedrock";
+import { hasModelCredentials, missingCredentialsMessage } from "../config/providers";
+import { createModelSession } from "../providers/providerFactory";
 import {
   buildCompletionPrompt,
   buildCompletionSystemPrompt,
@@ -68,14 +69,16 @@ export class SuggestionEngine {
     token?: vscode.CancellationToken
   ): Promise<Suggestion | null> {
     const cfg = getCompletionConfig();
-    if (!(await hasBedrockCredentials(this.context))) {
-      this.output.appendLine('[SuggestionEngine] No AWS credentials configured; skipping completion.');
+    if (!(await hasModelCredentials(this.context))) {
+      this.output.appendLine(`[SuggestionEngine] ${missingCredentialsMessage()}`);
       return null;
     }
-    const connection = await resolveBedrockConnection(this.context, this.output, {
-      region: cfg.region,
-      modelId: cfg.modelId
+    const completionOverride = vscode.workspace.getConfiguration("safegraph").get<string>("completion.modelId", "").trim();
+    const session = await createModelSession(this.context, this.output, completionOverride || undefined).catch((error: unknown) => {
+      this.output.appendLine(`[SuggestionEngine] ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
     });
+    if (!session) return null;
 
     const abort = new AbortController();
     if (token) {
@@ -94,8 +97,8 @@ export class SuggestionEngine {
         { multiline: cfg.multiline }
       );
 
-      const response = await bedrockConverse(prompt, {
-        ...connection,
+      const response = await session.provider.converse(prompt, {
+        modelId: session.modelId,
         system: buildCompletionSystemPrompt(),
         maxTokens: cfg.maxTokens,
         temperature: 0.1,

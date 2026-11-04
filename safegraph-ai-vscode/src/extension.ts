@@ -5,7 +5,7 @@ import { HistoryManager } from "./history/HistoryManager";
 import { HistoryViewer } from "./history/HistoryViewer";
 import { InlineCompletionProvider } from "./completion/InlineCompletionProvider";
 import { SetupPanel } from "./setup/SetupPanel";
-import { hasBedrockCredentials } from "./config/bedrock";
+import { hasModelCredentials } from "./config/providers";
 
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel("Safegraph AI");
@@ -67,9 +67,9 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // First run: walk the user through credentials before the first request fails.
-    void hasBedrockCredentials(context).then((configured) => {
+    void hasModelCredentials(context).then((configured) => {
       if (!configured) {
-        output.appendLine("[safegraph-ai] no AWS credentials configured; opening setup");
+        output.appendLine("[safegraph-ai] model provider is not configured; opening setup");
         openSetup();
       }
     }).catch((error) => output.appendLine(`[safegraph-ai] credential check failed: ${String(error)}`));

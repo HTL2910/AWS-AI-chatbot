@@ -1,12 +1,12 @@
 {
   "name": "safegraph-ai",
-  "displayName": "Safegraph AI v0.20.0",
+  "displayName": "Safegraph AI v0.20.5",
   "description": "Claude Haiku 4.5 powered AI coding IDE for VS Code: inline ghost-text completion, agentic chat, inline edits, and project-wide refactoring.",
   "repository": {
     "type": "git",
     "url": "https://github.com/safegraph-ai/safegraph-ai-vscode.git"
   },
-  "version": "0.20.0",
+  "version": "0.20.5",
   "publisher": "safegraph",
   "engines": {
     "vscode": "^1.90.0"
@@ -34,7 +34,7 @@
     "commands": [
       {
         "command": "safegraph.setup",
-        "title": "Safegraph AI: Setup (AWS Credentials & Model)"
+        "title": "Safegraph AI: Setup (Provider, Credentials & Model)"
       },
       {
         "command": "safegraph.setBedrockApiKey",
@@ -102,7 +102,7 @@
       }
     ],
     "configuration": {
-      "title": "Safegraph AI v0.20.0",
+      "title": "Safegraph AI v0.20.5",
       "properties": {
         "safegraph.autoRun": {
           "type": "string",
@@ -113,6 +113,34 @@
           ],
           "default": "safe",
           "description": "Auto-run commands in VS Code Terminal. 'safe' runs allowlisted commands automatically and asks for the rest."
+        },
+        "safegraph.provider": {
+          "type": "string",
+          "enum": [
+            "bedrock",
+            "openai-compatible"
+          ],
+          "enumDescriptions": [
+            "Amazon Bedrock. Uses the existing auth mode, region, and model id.",
+            "Any OpenAI-compatible /v1/chat/completions endpoint: 9Router, OpenRouter, LiteLLM, OpenAI, or a compatible gateway."
+          ],
+          "default": "bedrock",
+          "description": "Model provider. Existing Bedrock setups stay on bedrock until this is changed."
+        },
+        "safegraph.openaiBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:20128/v1",
+          "description": "Base URL for an OpenAI-compatible API. 9Router defaults to http://localhost:20128/v1. OpenRouter is https://openrouter.ai/api/v1. LiteLLM is often http://localhost:4000/v1."
+        },
+        "safegraph.openaiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the OpenAI-compatible provider. Safegraph AI: Setup stores this in VS Code SecretStorage and then clears this setting. Do not commit a real key. Leave empty for a local 9Router that does not require a key."
+        },
+        "safegraph.openaiModel": {
+          "type": "string",
+          "default": "9router/auto",
+          "description": "Model name sent to the OpenAI-compatible endpoint. Examples: 9router/auto, cc/claude-sonnet-4-6, openai/gpt-4.1, anthropic/claude-sonnet-4.5. The chat header can change this without opening Settings."
         },
         "safegraph.authMode": {
           "type": "string",
@@ -194,7 +222,7 @@
         "safegraph.completion.modelId": {
           "type": "string",
           "default": "",
-          "description": "Optional Bedrock model/inference-profile id for inline completion. Leave empty to reuse safegraph.modelId (Claude Haiku 4.5). Set a faster/cheaper model here to lower completion latency and cost."
+          "description": "Optional model id for inline completion. Leave empty to reuse the active chat model (Bedrock model id or the OpenAI-compatible model). Set a faster model here to lower completion latency and cost."
         },
         "safegraph.completion.maxTokens": {
           "type": "number",
@@ -240,7 +268,7 @@
       "activitybar": [
         {
           "id": "safegraph",
-          "title": "Safegraph AI v0.20.0",
+          "title": "Safegraph AI v0.20.5",
           "icon": "media/icon.svg"
         }
       ]

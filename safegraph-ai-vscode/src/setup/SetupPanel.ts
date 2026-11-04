@@ -1,9 +1,7 @@
 import * as vscode from "vscode";
-import { bedrockConverse } from "../bedrock/bedrockClient";
 import type { BedrockAuthMode } from "../bedrock/authResolver";
 import {
   DEFAULT_REGION,
-  HAIKU_45_MODEL_ID,
   SECRET_ACCESS_KEY_ID,
   SECRET_KEY_NAME,
   SECRET_SECRET_ACCESS_KEY,
@@ -11,34 +9,44 @@ import {
   getAuthMode,
   getBedrockModelConfig,
   loadStoredAccessKeys,
-  resolveBedrockApiKey,
-  resolveBedrockConnection
+  resolveBedrockApiKey
 } from "../config/bedrock";
 import { maskApiKey } from "../config/env";
+import {
+  SECRET_OPENAI_API_KEY,
+  getProviderId,
+  readOpenAIBaseUrl,
+  readOpenAIModel,
+  resolveOpenAIApiKey
+} from "../config/providers";
+import { BEDROCK_MODEL_SUGGESTIONS, OPENAI_MODEL_SUGGESTIONS, OPENAI_PRESETS } from "../providers/catalog";
+import { ProviderConfigurationError } from "../providers/errors";
+import { createModelSession } from "../providers/providerFactory";
+import { isLocalBaseUrl } from "../providers/openaiChat";
+import { probeOpenAIModels } from "../providers/openaiCompatibleProvider";
+import type { ProviderId } from "../providers/types";
 
 type SetupForm = {
+  provider: ProviderId;
   authMode: Exclude<BedrockAuthMode, "auto">;
   region: string;
   modelId: string;
   awsProfile: string;
-  /** Secret fields: an empty string means "keep the stored value". */
   apiKey: string;
   accessKeyId: string;
   secretAccessKey: string;
   sessionToken: string;
+  openaiBaseUrl: string;
+  openaiApiKey: string;
+  openaiModel: string;
 };
 
 type SetupMessage =
   | { type: "ready" }
   | { type: "save"; form: SetupForm; test: boolean }
   | { type: "clearSecrets" }
-  | { type: "openChat" };
-
-const MODEL_SUGGESTIONS = [
-  HAIKU_45_MODEL_ID,
-  "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-  "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-];
+  | { type: "openChat" }
+  | { type: "detect9Router" };
 
 const REGION_SUGGESTIONS = [
   "us-east-1",
@@ -53,7 +61,7 @@ const REGION_SUGGESTIONS = [
 ];
 
 /**
- * First-run / settings screen for AWS Bedrock credentials, region and model.
+ * First-run / settings screen for Bedrock and OpenAI-compatible endpoints.
  * Secrets go to VS Code SecretStorage; everything else to user settings.
  */
 export class SetupPanel {
@@ -103,12 +111,22 @@ export class SetupPanel {
       return;
     }
     if (msg.type === "clearSecrets") {
-      for (const key of [SECRET_KEY_NAME, SECRET_ACCESS_KEY_ID, SECRET_SECRET_ACCESS_KEY, SECRET_SESSION_TOKEN]) {
+      for (const key of [
+        SECRET_KEY_NAME,
+        SECRET_ACCESS_KEY_ID,
+        SECRET_SECRET_ACCESS_KEY,
+        SECRET_SESSION_TOKEN,
+        SECRET_OPENAI_API_KEY
+      ]) {
         await this.context.secrets.delete(key);
       }
-      this.output.appendLine("[safegraph-ai] stored AWS credentials cleared");
+      this.output.appendLine("[safegraph-ai] stored credentials cleared");
       this.post({ type: "state", state: await this.currentState() });
       this.post({ type: "status", ok: true, text: "Stored credentials removed." });
+      return;
+    }
+    if (msg.type === "detect9Router") {
+      await this.detectNineRouter();
       return;
     }
     if (msg.type === "save") {
@@ -122,7 +140,8 @@ export class SetupPanel {
         this.post({ type: "status", ok: true, text: "Saved." });
         return;
       }
-      this.post({ type: "status", ok: true, pending: true, text: "Saved. Testing connection to Amazon Bedrock..." });
+      const provider = msg.form.provider === "openai-compatible" ? "the OpenAI-compatible endpoint" : "Amazon Bedrock";
+      this.post({ type: "status", ok: true, pending: true, text: `Saved. Testing connection to ${provider}...` });
       const result = await this.testConnection();
       this.post({ type: "status", ...result });
     }
@@ -131,11 +150,13 @@ export class SetupPanel {
   private async currentState() {
     const { region, modelId } = getBedrockModelConfig();
     const apiKey = await resolveBedrockApiKey(this.context);
+    const openaiKey = await resolveOpenAIApiKey(this.context);
     const accessKeys = await loadStoredAccessKeys(this.context);
     const mode = getAuthMode();
     const authMode: SetupForm["authMode"] =
       mode !== "auto" ? mode : apiKey ? "bearer-token" : accessKeys ? "access-keys" : "bearer-token";
     return {
+      provider: getProviderId(),
       authMode,
       region,
       modelId,
@@ -144,13 +165,45 @@ export class SetupPanel {
       accessKeyIdMask: accessKeys ? maskApiKey(accessKeys.accessKeyId) : "",
       hasSecretAccessKey: Boolean(accessKeys),
       hasSessionToken: Boolean(accessKeys?.sessionToken),
-      models: MODEL_SUGGESTIONS,
-      regions: REGION_SUGGESTIONS
+      openaiBaseUrl: readOpenAIBaseUrl(),
+      openaiModel: readOpenAIModel(),
+      openaiKeyMask: openaiKey ? maskApiKey(openaiKey) : "",
+      models: BEDROCK_MODEL_SUGGESTIONS,
+      openaiModels: OPENAI_MODEL_SUGGESTIONS,
+      regions: REGION_SUGGESTIONS,
+      presets: OPENAI_PRESETS
     };
   }
 
   /** Returns an error message, or undefined on success. */
   private async save(form: SetupForm): Promise<string | undefined> {
+    const cfg = vscode.workspace.getConfiguration("safegraph");
+    const target = vscode.ConfigurationTarget.Global;
+    const provider: ProviderId = form.provider === "openai-compatible" ? "openai-compatible" : "bedrock";
+    await cfg.update("provider", provider, target);
+
+    if (provider === "openai-compatible") {
+      const baseUrl = form.openaiBaseUrl.trim();
+      const model = form.openaiModel.trim();
+      if (!baseUrl) return "Base URL is required.";
+      try {
+        const parsed = new URL(baseUrl);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "Base URL must start with http:// or https://.";
+      } catch {
+        return "Base URL is not a valid URL.";
+      }
+      if (!model) return "Model name is required.";
+      const key = form.openaiApiKey.trim();
+      if (key) await this.context.secrets.store(SECRET_OPENAI_API_KEY, key);
+      else if (!(await resolveOpenAIApiKey(this.context)) && !isLocalBaseUrl(baseUrl)) {
+        return "Enter an API key. Local 9Router and LiteLLM can stay empty; OpenRouter and OpenAI cannot.";
+      }
+      await cfg.update("openaiBaseUrl", baseUrl, target);
+      await cfg.update("openaiModel", model, target);
+      this.output.appendLine(`[safegraph-ai] setup saved: provider=openai-compatible base=${baseUrl} model=${model}`);
+      return undefined;
+    }
+
     const region = form.region.trim();
     const modelId = form.modelId.trim();
     if (!region) return "Region is required.";
@@ -169,38 +222,67 @@ export class SetupPanel {
       if (!accessKeyId || !secretAccessKey) return "Enter both the AWS Access Key ID and Secret Access Key.";
       await secrets.store(SECRET_ACCESS_KEY_ID, accessKeyId);
       await secrets.store(SECRET_SECRET_ACCESS_KEY, secretAccessKey);
-      // A new key pair invalidates any old temporary session token unless one is given.
       if (form.sessionToken.trim()) await secrets.store(SECRET_SESSION_TOKEN, form.sessionToken.trim());
       else if (form.accessKeyId.trim() || form.secretAccessKey.trim()) await secrets.delete(SECRET_SESSION_TOKEN);
     }
 
-    const cfg = vscode.workspace.getConfiguration("safegraph");
-    const target = vscode.ConfigurationTarget.Global;
     await cfg.update("authMode", form.authMode, target);
     await cfg.update("region", region, target);
     await cfg.update("modelId", modelId, target);
     await cfg.update("awsProfile", form.authMode === "aws-credentials" ? form.awsProfile.trim() : cfg.get("awsProfile", ""), target);
-    this.output.appendLine(`[safegraph-ai] setup saved: auth=${form.authMode} region=${region} model=${modelId}`);
+    this.output.appendLine(`[safegraph-ai] setup saved: provider=bedrock auth=${form.authMode} region=${region} model=${modelId}`);
     return undefined;
   }
 
   private async testConnection(): Promise<{ ok: boolean; text: string }> {
     try {
-      const connection = await resolveBedrockConnection(this.context, this.output);
+      const session = await createModelSession(this.context, this.output);
       const started = Date.now();
-      const result = await bedrockConverse("Reply with exactly: OK", {
-        ...connection,
+      const result = await session.provider.converse("Reply with exactly: OK", {
+        modelId: session.modelId,
         maxTokens: 16,
         temperature: 0,
         retries: 0
       });
       const ms = Date.now() - started;
-      this.output.appendLine(`[safegraph-ai] setup test ok in ${ms}ms: ${result.text.trim().slice(0, 40)}`);
-      return { ok: true, text: `Connected to ${connection.modelId} in ${connection.region} (${ms} ms). You're ready to go.` };
+      const preview = result.text.trim().slice(0, 40);
+      this.output.appendLine(`[safegraph-ai] setup test ok in ${ms}ms via ${session.providerId}: ${preview}`);
+      const where = session.providerId === "bedrock" ? `${session.modelId} in ${session.label}` : `${session.modelId} at ${session.label}`;
+      return { ok: true, text: `Connected to ${where} (${ms} ms). You're ready to go.` };
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       this.output.appendLine(`[safegraph-ai] setup test failed: ${message}`);
+      if (e instanceof ProviderConfigurationError) return { ok: false, text: message };
       return { ok: false, text: `Connection failed: ${message}` };
+    }
+  }
+
+  private async detectNineRouter() {
+    const baseUrl = "http://localhost:20128/v1";
+    try {
+      const models = await probeOpenAIModels(baseUrl, await resolveOpenAIApiKey(this.context));
+      const model = models.includes("9router/auto") ? "9router/auto" : models[0] || "9router/auto";
+      this.post({
+        type: "detected",
+        ok: true,
+        baseUrl,
+        model,
+        models: models.length > 0 ? models : OPENAI_MODEL_SUGGESTIONS,
+        text: models.length
+          ? `9Router is running. Found ${models.length} model${models.length === 1 ? "" : "s"}.`
+          : "9Router is running. No model list was returned; 9router/auto is filled in."
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this.output.appendLine(`[safegraph-ai] 9Router detect failed: ${message}`);
+      const unreachable = /ECONNREFUSED|ENOTFOUND|Cannot reach|timeout/i.test(message);
+      this.post({
+        type: "detected",
+        ok: false,
+        text: unreachable
+          ? "9Router is not reachable at http://localhost:20128. Start 9Router, then detect again. Safegraph will not switch to Bedrock on its own."
+          : message
+      });
     }
   }
 }
@@ -224,7 +306,7 @@ function renderHtml(webview: vscode.Webview) {
 <title>Safegraph AI Setup</title>
 <style nonce="${n}">
   body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); padding: 24px; }
-  .wrap { max-width: 620px; margin: 0 auto; }
+  .wrap { max-width: 680px; margin: 0 auto; }
   h1 { font-size: 1.5em; margin: 0 0 4px; }
   .sub { color: var(--vscode-descriptionForeground); margin: 0 0 24px; }
   fieldset { border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); border-radius: 6px; padding: 16px; margin: 0 0 16px; }
@@ -237,7 +319,7 @@ function renderHtml(webview: vscode.Webview) {
   .mode { display: flex; gap: 8px; align-items: flex-start; padding: 8px; border-radius: 4px; cursor: pointer; margin: 0; font-weight: normal; }
   .mode:hover { background: var(--vscode-list-hoverBackground); }
   .mode b { display: block; }
-  .section[hidden] { display: none; }
+  .pane[hidden], .section[hidden] { display: none; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
   button { padding: 6px 14px; border: none; border-radius: 2px; cursor: pointer; font-family: inherit; color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
   button:hover { background: var(--vscode-button-hoverBackground); }
@@ -255,53 +337,81 @@ function renderHtml(webview: vscode.Webview) {
 <body>
 <div class="wrap">
   <h1>Safegraph AI Setup</h1>
-  <p class="sub">Connect to Claude on Amazon Bedrock. Secrets are stored in VS Code SecretStorage on this machine only.</p>
+  <p class="sub">Use Amazon Bedrock, or any OpenAI-compatible endpoint such as 9Router, OpenRouter, LiteLLM, or the OpenAI API. Secrets stay in VS Code SecretStorage on this machine.</p>
 
   <fieldset>
-    <legend>1. Authentication</legend>
+    <legend>1. Provider</legend>
     <div class="modes">
-      <label class="mode"><input type="radio" name="authMode" value="bearer-token" /><span><b>Bedrock API key</b><span class="hint">Key generated in the Bedrock console (starts with ABSK… or bedrock-api-key-…).</span></span></label>
-      <label class="mode"><input type="radio" name="authMode" value="access-keys" /><span><b>AWS access key</b><span class="hint">IAM Access Key ID + Secret Access Key with bedrock:InvokeModel permission.</span></span></label>
-      <label class="mode"><input type="radio" name="authMode" value="aws-credentials" /><span><b>AWS profile / default credential chain</b><span class="hint">Uses ~/.aws credentials, SSO or environment variables already on this machine.</span></span></label>
-    </div>
-
-    <div class="section" data-mode="bearer-token">
-      <label for="apiKey">Bedrock API key</label>
-      <input id="apiKey" type="password" autocomplete="off" />
-      <div class="hint" id="apiKeyHint"></div>
-    </div>
-
-    <div class="section" data-mode="access-keys">
-      <label for="accessKeyId">Access Key ID</label>
-      <input id="accessKeyId" type="text" autocomplete="off" spellcheck="false" />
-      <label for="secretAccessKey">Secret Access Key</label>
-      <input id="secretAccessKey" type="password" autocomplete="off" />
-      <label for="sessionToken">Session token <span class="hint">(optional, for temporary credentials)</span></label>
-      <input id="sessionToken" type="password" autocomplete="off" />
-      <div class="hint" id="accessKeyHint"></div>
-    </div>
-
-    <div class="section" data-mode="aws-credentials">
-      <label for="awsProfile">AWS profile name</label>
-      <input id="awsProfile" type="text" placeholder="default" spellcheck="false" />
-      <div class="hint">Leave empty to use the default credential chain.</div>
+      <label class="mode"><input type="radio" name="provider" value="bedrock" /><span><b>Amazon Bedrock</b><span class="hint">Claude on Bedrock. Existing credentials, region, and model keep working.</span></span></label>
+      <label class="mode"><input type="radio" name="provider" value="openai-compatible" /><span><b>OpenAI-compatible</b><span class="hint">9Router, OpenRouter, LiteLLM, OpenAI, or any server that implements /v1/chat/completions.</span></span></label>
     </div>
   </fieldset>
 
-  <fieldset>
-    <legend>2. Region &amp; model</legend>
-    <label for="region">AWS region</label>
-    <input id="region" type="text" list="regions" spellcheck="false" />
-    <datalist id="regions"></datalist>
-    <label for="modelId">Model ID or inference profile ARN</label>
-    <input id="modelId" type="text" list="models" spellcheck="false" />
-    <datalist id="models"></datalist>
-    <div class="hint">Recommended: Claude Haiku 4.5 (fast, low cost). Make sure model access is enabled for your account in the Bedrock console.</div>
-  </fieldset>
+  <div class="pane" id="bedrockPane">
+    <fieldset>
+      <legend>2. Bedrock authentication</legend>
+      <div class="modes">
+        <label class="mode"><input type="radio" name="authMode" value="bearer-token" /><span><b>Bedrock API key</b><span class="hint">Key generated in the Bedrock console (starts with ABSK… or bedrock-api-key-…).</span></span></label>
+        <label class="mode"><input type="radio" name="authMode" value="access-keys" /><span><b>AWS access key</b><span class="hint">IAM Access Key ID + Secret Access Key with bedrock:InvokeModel permission.</span></span></label>
+        <label class="mode"><input type="radio" name="authMode" value="aws-credentials" /><span><b>AWS profile / default credential chain</b><span class="hint">Uses ~/.aws credentials, SSO or environment variables already on this machine.</span></span></label>
+      </div>
+
+      <div class="section" data-mode="bearer-token">
+        <label for="apiKey">Bedrock API key</label>
+        <input id="apiKey" type="password" autocomplete="off" />
+        <div class="hint" id="apiKeyHint"></div>
+      </div>
+
+      <div class="section" data-mode="access-keys">
+        <label for="accessKeyId">Access Key ID</label>
+        <input id="accessKeyId" type="text" autocomplete="off" spellcheck="false" />
+        <label for="secretAccessKey">Secret Access Key</label>
+        <input id="secretAccessKey" type="password" autocomplete="off" />
+        <label for="sessionToken">Session token <span class="hint">(optional, for temporary credentials)</span></label>
+        <input id="sessionToken" type="password" autocomplete="off" />
+        <div class="hint" id="accessKeyHint"></div>
+      </div>
+
+      <div class="section" data-mode="aws-credentials">
+        <label for="awsProfile">AWS profile name</label>
+        <input id="awsProfile" type="text" placeholder="default" spellcheck="false" />
+        <div class="hint">Leave empty to use the default credential chain.</div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>3. Region &amp; model</legend>
+      <label for="region">AWS region</label>
+      <input id="region" type="text" list="regions" spellcheck="false" />
+      <datalist id="regions"></datalist>
+      <label for="modelId">Model ID or inference profile ARN</label>
+      <input id="modelId" type="text" list="models" spellcheck="false" />
+      <datalist id="models"></datalist>
+      <div class="hint">Recommended: Claude Haiku 4.5 (fast, low cost). Make sure model access is enabled for your account in the Bedrock console.</div>
+    </fieldset>
+  </div>
+
+  <div class="pane" id="openaiPane" hidden>
+    <fieldset>
+      <legend>2. Endpoint</legend>
+      <div class="actions" id="presets"></div>
+      <label for="openaiBaseUrl">Base URL</label>
+      <input id="openaiBaseUrl" type="text" spellcheck="false" placeholder="http://localhost:20128/v1" />
+      <label for="openaiApiKey">API key</label>
+      <input id="openaiApiKey" type="password" autocomplete="off" />
+      <div class="hint" id="openaiKeyHint"></div>
+      <label for="openaiModel">Model</label>
+      <input id="openaiModel" type="text" list="openaiModels" spellcheck="false" placeholder="9router/auto" />
+      <datalist id="openaiModels"></datalist>
+      <div class="hint">Type any model id the endpoint accepts, for example 9router/auto or cc/claude-sonnet-4-6. The chat header can switch models later without reopening Setup.</div>
+      <div class="hint">Safegraph does not fall back to Bedrock if this endpoint fails, so a Bedrock request is never a surprise bill. Switch the provider above when you want Bedrock again.</div>
+    </fieldset>
+  </div>
 
   <div class="actions">
     <button id="saveTest" type="button">Save &amp; test connection</button>
     <button id="save" class="secondary" type="button">Save</button>
+    <button id="detect9" class="secondary" type="button">Detect 9Router</button>
     <button id="clear" class="secondary" type="button">Remove stored keys</button>
   </div>
   <div id="status" hidden></div>
@@ -310,28 +420,48 @@ function renderHtml(webview: vscode.Webview) {
 <script nonce="${n}">
   const vscode = acquireVsCodeApi();
   const $ = (id) => document.getElementById(id);
-  const radios = Array.from(document.querySelectorAll('input[name=authMode]'));
+  const providerRadios = Array.from(document.querySelectorAll('input[name=provider]'));
+  const authRadios = Array.from(document.querySelectorAll('input[name=authMode]'));
+  let presets = [];
 
-  function selectedMode() {
+  function selected(radios, fallback) {
     const r = radios.find((x) => x.checked);
-    return r ? r.value : "bearer-token";
+    return r ? r.value : fallback;
   }
-  function syncSections() {
-    const mode = selectedMode();
+  function sync() {
+    const provider = selected(providerRadios, "bedrock");
+    $('bedrockPane').hidden = provider !== "bedrock";
+    $('openaiPane').hidden = provider !== "openai-compatible";
+    const mode = selected(authRadios, "bearer-token");
     document.querySelectorAll('.section').forEach((el) => { el.hidden = el.dataset.mode !== mode; });
   }
-  radios.forEach((r) => r.addEventListener('change', syncSections));
+  providerRadios.forEach((r) => r.addEventListener('change', sync));
+  authRadios.forEach((r) => r.addEventListener('change', sync));
 
   function fillList(id, values) {
     const list = $(id);
     list.innerHTML = '';
-    for (const v of values) { const o = document.createElement('option'); o.value = v; list.appendChild(o); }
+    for (const v of values || []) { const o = document.createElement('option'); o.value = v; list.appendChild(o); }
+  }
+  function renderPresets() {
+    const host = $('presets');
+    host.innerHTML = '';
+    for (const preset of presets) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'secondary';
+      btn.textContent = preset.label;
+      btn.addEventListener('click', () => {
+        $('openaiBaseUrl').value = preset.baseUrl;
+        $('openaiModel').value = preset.model;
+      });
+      host.appendChild(btn);
+    }
   }
 
   function setBusy(busy) {
-    ['saveTest', 'save', 'clear'].forEach((id) => { $(id).disabled = busy; });
+    ['saveTest', 'save', 'clear', 'detect9'].forEach((id) => { $(id).disabled = busy; });
   }
-
   function showStatus(s) {
     const el = $('status');
     el.hidden = false;
@@ -340,21 +470,24 @@ function renderHtml(webview: vscode.Webview) {
     if (!s.pending) setBusy(false);
     $('next').hidden = !(s.ok && !s.pending);
   }
-
   function send(test) {
     setBusy(true);
     vscode.postMessage({
       type: 'save',
       test,
       form: {
-        authMode: selectedMode(),
+        provider: selected(providerRadios, "bedrock"),
+        authMode: selected(authRadios, "bearer-token"),
         region: $('region').value,
         modelId: $('modelId').value,
         awsProfile: $('awsProfile').value,
         apiKey: $('apiKey').value,
         accessKeyId: $('accessKeyId').value,
         secretAccessKey: $('secretAccessKey').value,
-        sessionToken: $('sessionToken').value
+        sessionToken: $('sessionToken').value,
+        openaiBaseUrl: $('openaiBaseUrl').value,
+        openaiApiKey: $('openaiApiKey').value,
+        openaiModel: $('openaiModel').value
       }
     });
   }
@@ -362,33 +495,51 @@ function renderHtml(webview: vscode.Webview) {
   $('saveTest').addEventListener('click', () => send(true));
   $('save').addEventListener('click', () => send(false));
   $('clear').addEventListener('click', () => { setBusy(true); vscode.postMessage({ type: 'clearSecrets' }); });
+  $('detect9').addEventListener('click', () => { setBusy(true); vscode.postMessage({ type: 'detect9Router' }); });
   $('openChat').addEventListener('click', () => vscode.postMessage({ type: 'openChat' }));
 
   window.addEventListener('message', (event) => {
     const msg = event.data;
     if (msg.type === 'state') {
       const s = msg.state;
-      radios.forEach((r) => { r.checked = r.value === s.authMode; });
+      presets = s.presets || [];
+      renderPresets();
+      providerRadios.forEach((r) => { r.checked = r.value === s.provider; });
+      authRadios.forEach((r) => { r.checked = r.value === s.authMode; });
       $('region').value = s.region;
       $('modelId').value = s.modelId;
       $('awsProfile').value = s.awsProfile || '';
-      ['apiKey', 'accessKeyId', 'secretAccessKey', 'sessionToken'].forEach((id) => { $(id).value = ''; });
+      $('openaiBaseUrl').value = s.openaiBaseUrl || 'http://localhost:20128/v1';
+      $('openaiModel').value = s.openaiModel || '9router/auto';
+      ['apiKey', 'accessKeyId', 'secretAccessKey', 'sessionToken', 'openaiApiKey'].forEach((id) => { $(id).value = ''; });
       $('apiKey').placeholder = s.apiKeyMask ? 'Stored: ' + s.apiKeyMask + ' (leave empty to keep)' : 'Paste your Bedrock API key';
       $('apiKeyHint').textContent = s.apiKeyMask ? 'A key is already stored. Paste a new one to replace it.' : '';
       $('accessKeyId').placeholder = s.accessKeyIdMask ? 'Stored: ' + s.accessKeyIdMask + ' (leave empty to keep)' : 'AKIA...';
       $('secretAccessKey').placeholder = s.hasSecretAccessKey ? 'Stored (leave empty to keep)' : '';
       $('sessionToken').placeholder = s.hasSessionToken ? 'Stored (leave empty to keep)' : '';
       $('accessKeyHint').textContent = s.hasSecretAccessKey ? 'Access keys are already stored. Fill the fields only to replace them.' : '';
+      $('openaiApiKey').placeholder = s.openaiKeyMask ? 'Stored: ' + s.openaiKeyMask + ' (leave empty to keep)' : 'Optional on localhost';
+      $('openaiKeyHint').textContent = s.openaiKeyMask ? 'A key is already stored in SecretStorage. Paste a new one to replace it.' : 'Stored in SecretStorage, not in settings.json. Leave empty for a local 9Router that does not require a key.';
       fillList('regions', s.regions);
       fillList('models', s.models);
-      syncSections();
+      fillList('openaiModels', s.openaiModels);
+      sync();
       setBusy(false);
+    } else if (msg.type === 'detected') {
+      if (msg.ok) {
+        providerRadios.forEach((r) => { r.checked = r.value === 'openai-compatible'; });
+        $('openaiBaseUrl').value = msg.baseUrl;
+        if (msg.model) $('openaiModel').value = msg.model;
+        if (msg.models) fillList('openaiModels', msg.models);
+        sync();
+      }
+      showStatus(msg);
     } else if (msg.type === 'status') {
       showStatus(msg);
     }
   });
 
-  syncSections();
+  sync();
   vscode.postMessage({ type: 'ready' });
 </script>
 </body>
