@@ -56,6 +56,43 @@ body {
   position: sticky;
   top: 0;
   z-index: 50;
+  flex-wrap: wrap;
+}
+
+.modelPicker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.modelPickerLabel {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  flex: 0 0 auto;
+}
+
+.modelPicker select,
+.modelPicker input {
+  width: 100%;
+  max-width: 240px;
+  min-width: 0;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.modelPicker select:focus,
+.modelPicker input:focus {
+  outline: 1px solid var(--accent);
 }
 
 .title {
