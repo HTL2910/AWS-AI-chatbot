@@ -2,7 +2,7 @@
 
 **A VS Code coding agent powered by Claude on Amazon Bedrock.** Ask it to write code, fix bugs, review changes or write a project report — it reads your repository, applies real diffs, runs safe checks and tells you what changed.
 
-Current extension version: `0.20.0` · Default model: **Claude Haiku 4.5** on Amazon Bedrock
+Current extension version: `0.20.5` · Default model: **Claude Haiku 4.5** on Amazon Bedrock
 
 ---
 
@@ -10,24 +10,24 @@ Current extension version: `0.20.0` · Default model: **Claude Haiku 4.5** on Am
 
 ```mermaid
 flowchart LR
-    A["Download<br/>safegraph-ai-0.20.0.vsix<br/>from GitHub Releases"] --> B["Install in VS Code<br/>Extensions → ··· →<br/>Install from VSIX"]
+    A["Download<br/>safegraph-ai-0.20.5.vsix<br/>from GitHub Releases"] --> B["Install in VS Code<br/>Extensions → ··· →<br/>Install from VSIX"]
     B --> C["Setup screen opens<br/>enter AWS credentials,<br/>region, model"]
     C --> D{"Save &amp; test<br/>connection"}
     D -- "green" --> E["Open the chat<br/>and ask"]
     D -- "red: shows AWS error" --> C
 ```
 
-1. Download `safegraph-ai-0.20.0.vsix` from [Releases](https://github.com/HTL2910/AWS-AI-chatbot/releases).
+1. Download `safegraph-ai-0.20.5.vsix` from [Releases](https://github.com/HTL2910/AWS-AI-chatbot/releases).
 2. Install it from the Extensions view (`···` → **Install from VSIX...**) or:
 
    ```bash
-   code --install-extension safegraph-ai-0.20.0.vsix --force
+   code --install-extension safegraph-ai-0.20.5.vsix --force
    ```
 
 3. The **Safegraph AI Setup** screen opens on first run (or run `Safegraph AI: Setup`). Enter credentials, keep the pre-filled region/model or change them, click **Save & test connection**.
 4. Click the Safegraph AI icon in the Activity Bar and start asking.
 
-Check the installed version with `code --list-extensions --show-versions | grep safegraph` → `safegraph.safegraph-ai@0.20.0`.
+Check the installed version with `code --list-extensions --show-versions | grep safegraph` → `safegraph.safegraph-ai@0.20.5`.
 
 ---
 
@@ -85,7 +85,7 @@ flowchart LR
     CR -- "Converse API (HTTPS)" --> BR
 ```
 
-There is no SafeGraph server: the extension calls Amazon Bedrock Runtime directly with your credentials, and every request is billed to your AWS account.
+There is no SafeGraph server. With the default provider the extension calls Amazon Bedrock Runtime directly and every request is billed to your AWS account. Set `safegraph.provider` to `openai-compatible` to call 9Router, OpenRouter, LiteLLM, or any other `/v1/chat/completions` endpoint instead. That path does not fall back to Bedrock.
 
 One task runs as a loop until the model has enough evidence to finish:
 
