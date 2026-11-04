@@ -54,7 +54,7 @@
 - **Authentication Docs**: Documented AWS credential-chain and Bedrock API-key authentication, safe environment examples, and common Bedrock troubleshooting cases.
 
 ### Fixed
-- prevented extension from crashing due to `constư` typo in `src/extension.ts`.
+- Prevented extension from crashing due to `constư` typo in `src/extension.ts`.
 
 ## [0.17.0] - 2026-06-10
 
