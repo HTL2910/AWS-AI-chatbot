@@ -1,6 +1,6 @@
 # SafeGraph AI
 
-**A VS Code coding agent powered by Claude on Amazon Bedrock.** Ask it to write code, fix bugs, review changes or write a project report — it reads your repository, applies real diffs, runs safe checks and tells you what changed.
+**A VS Code coding agent.** Ask it to write code, fix bugs, review changes or write a project report — it reads your repository, applies real diffs, runs safe checks and tells you what changed. The default model is **Claude Haiku 4.5** on Amazon Bedrock. Release **0.20.5** can also call 9Router, OpenRouter, LiteLLM, OpenAI, or any other OpenAI-compatible `/v1/chat/completions` endpoint.
 
 Current extension version: `0.20.5` · Default model: **Claude Haiku 4.5** on Amazon Bedrock
 
@@ -11,7 +11,7 @@ Current extension version: `0.20.5` · Default model: **Claude Haiku 4.5** on Am
 ```mermaid
 flowchart LR
     A["Download<br/>safegraph-ai-0.20.5.vsix<br/>from GitHub Releases"] --> B["Install in VS Code<br/>Extensions → ··· →<br/>Install from VSIX"]
-    B --> C["Setup screen opens<br/>enter AWS credentials,<br/>region, model"]
+    B --> C["Setup screen opens<br/>Bedrock or<br/>OpenAI-compatible"]
     C --> D{"Save &amp; test<br/>connection"}
     D -- "green" --> E["Open the chat<br/>and ask"]
     D -- "red: shows AWS error" --> C
@@ -24,10 +24,17 @@ flowchart LR
    code --install-extension safegraph-ai-0.20.5.vsix --force
    ```
 
-3. The **Safegraph AI Setup** screen opens on first run (or run `Safegraph AI: Setup`). Enter credentials, keep the pre-filled region/model or change them, click **Save & test connection**.
-4. Click the Safegraph AI icon in the Activity Bar and start asking.
+3. The **Safegraph AI Setup** screen opens on first run (or run `Safegraph AI: Setup`). Leave the provider on **Bedrock** and enter AWS credentials, or switch to **OpenAI-compatible** and point it at 9Router, OpenRouter, LiteLLM, or OpenAI. Click **Save & test connection**.
+4. Click the Safegraph AI icon in the Activity Bar and start asking. The model dropdown in the chat header changes the model without opening Settings.
 
 Check the installed version with `code --list-extensions --show-versions | grep safegraph` → `safegraph.safegraph-ai@0.20.5`.
+
+### What's new in 0.20.5
+
+- **OpenAI-compatible provider**, next to Bedrock. Setup presets cover 9Router (`http://localhost:20128/v1`), OpenRouter, LiteLLM, and OpenAI. API keys are stored in VS Code SecretStorage.
+- **One provider session** for chat, inline completion, and inline edit. Bedrock stays the default. A failed OpenAI-compatible request does not fall back to Bedrock.
+- **Detect 9Router** fills the base URL and model list from a local 9Router. A key is optional on localhost.
+- Token usage appears in the composer when the endpoint returns it.
 
 ---
 
@@ -140,7 +147,9 @@ The IAM principal needs `bedrock:InvokeModel` and `bedrock:InvokeModelWithRespon
 
 | Message | Fix |
 |---|---|
-| AWS credentials are not configured | Run `Safegraph AI: Setup` |
+| AWS credentials are not configured | The provider is still Bedrock and no credentials are stored. Run `Safegraph AI: Setup` |
+| Cannot reach `http://localhost:20128` | 9Router is not running, or the base URL is wrong. Start it, then use **Detect 9Router** |
+| API key rejected | The OpenAI-compatible key does not match that base URL. Paste a new key in Setup |
 | `The security token included in the request is invalid` | Wrong access key/secret, or temporary keys missing the session token |
 | `AccessDeniedException` | Grant the Bedrock permissions above and enable model access |
 | Model not available in region | Change region, or use an inference profile ID (`global.`, `us.`, `apac.`) |
@@ -153,9 +162,13 @@ The IAM principal needs `bedrock:InvokeModel` and `bedrock:InvokeModelWithRespon
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `safegraph.authMode` | `auto` | `auto`, `bearer-token`, `access-keys`, `aws-credentials` |
+| `safegraph.provider` | `bedrock` | `bedrock` or `openai-compatible` |
+| `safegraph.openaiBaseUrl` | `http://localhost:20128/v1` | OpenAI-compatible base URL (9Router default) |
+| `safegraph.openaiModel` | `9router/auto` | Model name for the OpenAI-compatible provider |
+| `safegraph.openaiApiKey` | empty | Moved into SecretStorage by Setup. Do not commit a real key |
+| `safegraph.authMode` | `auto` | Bedrock only: `auto`, `bearer-token`, `access-keys`, `aws-credentials` |
 | `safegraph.region` | `ap-southeast-1` | Bedrock region |
-| `safegraph.modelId` | Claude Haiku 4.5 (global) | Model ID or inference profile ARN |
+| `safegraph.modelId` | Claude Haiku 4.5 (global) | Bedrock model ID or inference profile ARN |
 | `safegraph.awsProfile` | empty | Profile for `aws-credentials` |
 | `safegraph.autoRun` | `safe` | Agent mode: `safe` runs allowlisted build/test commands, `ask` asks every time, `off` never runs |
 | `safegraph.completion.*` | | Ghost-text completion on/off, trigger, model |
@@ -165,9 +178,10 @@ The IAM principal needs `bedrock:InvokeModel` and `bedrock:InvokeModelWithRespon
 
 ## Cost, Security, Limits
 
-- Bedrock usage costs money on your AWS account — set up billing alerts.
+- Bedrock usage is billed by AWS. Set up billing alerts. An OpenAI-compatible endpoint is billed by that service. A local 9Router stays on your machine.
+- A failed OpenAI-compatible request does not fall back to Bedrock.
 - Commands the agent proposes run only if allowlisted or approved; review change sets before keeping them.
-- Model quality depends on the Bedrock model you pick.
+- Model quality depends on the model you pick.
 - Not included yet: browser automation, semantic vector search, separate multi-agent workers.
 
 ---
@@ -209,7 +223,7 @@ Press `F5` with `safegraph-ai-vscode/` open in VS Code to start an Extension Dev
 └── legacy/                # Old Flask/Streamlit prototypes (unsupported)
 ```
 
-More: [extension README](safegraph-ai-vscode/README.md) · [CHANGELOG](CHANGELOG.md) · [credential guide](docs/CREDENTIALS_GUIDE.md) · [renew API key](docs/RENEW_API_KEY.md)
+More: [extension README](safegraph-ai-vscode/README.md) · [0.20.5 release notes](safegraph-ai-vscode/RELEASE_NOTES_0.20.5.md) · [CHANGELOG](CHANGELOG.md) · [credential guide](docs/CREDENTIALS_GUIDE.md) · [renew API key](docs/RENEW_API_KEY.md)
 
 ## License
 
